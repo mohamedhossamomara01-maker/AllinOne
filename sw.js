@@ -1,7 +1,7 @@
 // Service Worker: بيخزّن التطبيق والمكتبات عشان يفتح من غير نت (البيانات نفسها بتتخزن في التطبيق)
-const SHELL = "allinone-shell-v8";
+const SHELL = "allinone-shell-v9";
 const LIBS = "allinone-libs-v1";
-const SHELL_FILES = ["./", "./index.html", "./app.js", "./athkar.js", "./manifest.json", "./icon-192.png", "./icon-512.png", "./lottie-pushup.json", "./lottie-walk.json", "./lottie-go.json", "./lottie-clock.json", "./lottie-dog.json", "./media/pushup.webp", "./media/dbpress.webp", "./media/altpress.webp", "./media/pullover.webp", "./media/rope.webp", "./media/run.webp", "./media/walk.webp", "./media/sprint.webp", "./media/rest.webp"];
+const SHELL_FILES = ["./", "./index.html", "./app.js", "./athkar.js", "./manifest.json", "./icon-192.png", "./icon-512.png", "./lottie-pushup.json", "./lottie-walk.json", "./lottie-go.json", "./lottie-clock.json", "./lottie-dog.json"];
 const LIB_URLS = [
   "https://unpkg.com/react@18.2.0/umd/react.production.min.js",
   "https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js",
