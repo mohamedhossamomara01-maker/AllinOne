@@ -26,7 +26,7 @@ const h = React.createElement;
 
 function start() {
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-const APP_VERSION = "v2026.10.17-b";
+const APP_VERSION = "v2026.11.06-a";
 if ("serviceWorker" in navigator && navigator.serviceWorker.controller) { let rl = false; navigator.serviceWorker.addEventListener("controllerchange", () => { if (rl) return; rl = true; location.reload(); }); }
 if ("serviceWorker" in navigator) { const reg = () => navigator.serviceWorker.register("./sw.js").catch(() => {}); if (document.readyState === "complete") reg(); else window.addEventListener("load", reg); }
 
@@ -534,6 +534,92 @@ function FixedSheet({ onClose }) {
     h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 } }, "التغيير بيسري من الشهر الجاي. الشهور اللي فاتت ما بتتغيّرش."));
 }
 
+// ── قراءة الفاتورة من الصورة (Google Gemini — مفتاح مجاني بيتخزن على موبايلك بس) ──
+const RCPT_KEY = "allinone:geminiKey";
+const RCPT_CATS = [["🥩", "لحوم وفراخ"], ["🥬", "خضار وفاكهة"], ["🧀", "ألبان وجبن"], ["🧂", "عطارة"], ["🧼", "منظفات"], ["🍞", "مخبوزات"], ["🥤", "مشروبات"], ["🍫", "سناكس وحلويات"], ["🧴", "عناية شخصية"]];
+async function rcptShrink(file) {
+  const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+  const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+  const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+  const c = document.createElement("canvas"); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.82).split(",")[1];
+}
+async function rcptRead(b64, key) {
+  const catList = RCPT_CATS.map(c => c[1]).concat(EXP_CATS.filter(c => c[1] !== "أكل وسوبر ماركت").map(c => c[1]));
+  const prompt = "دي صورة فاتورة شراء (غالبًا من محل في مصر وبالعربي). استخرج منها JSON بالشكل المطلوب.\n" +
+    "- store: اسم المحل زي ما هو مكتوب في الفاتورة (قصير).\n- date: تاريخ الفاتورة بصيغة YYYY-MM-DD لو ظاهر وإلا سيبه فاضي.\n- total: إجمالي الفاتورة لو ظاهر وإلا 0.\n" +
+    "- items: كل بند اتشترى: name = اسم البند والكمية زي مكتوبين (مثال: 2 ك لحمة مفرومة)، amount = إجمالي سعر البند كله (الكمية × السعر) كرقم، cat = التصنيف.\n" +
+    "التصنيف لازم يكون واحد من القايمة دي بالظبط لو مناسب: " + catList.join("، ") + ". لو مفيش مناسب اعمل تصنيف عربي قصير (كلمتين بالكتير).\n" +
+    "أمثلة: لحمة مفرومة أو فراخ → لحوم وفراخ، توابل أو إندومي أو مكرونة أو أرز أو سكر أو زيت أكل → عطارة، شامبو أو زيت شعر أو صابون أو مسحوق غسيل → منظفات.\n" +
+    "ماتعتبرش الإجمالي أو المدفوع أو الباقي أو الخصم بند. رسوم التوصيل أو الخدمة أو الضريبة تتحط بند تصنيفه أخرى. اكتب الأسماء بالعربي زي الفاتورة. سطر مش مقروء تجاهله. رجّع JSON بس.";
+  const body = { contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: "image/jpeg", data: b64 } }] }], generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { store: { type: "STRING" }, date: { type: "STRING" }, total: { type: "NUMBER" }, items: { type: "ARRAY", items: { type: "OBJECT", properties: { name: { type: "STRING" }, amount: { type: "NUMBER" }, cat: { type: "STRING" } }, required: ["name", "amount", "cat"] } } }, required: ["items"] } } };
+  let last = "";
+  for (const model of ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"]) {
+    let r; try { r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + encodeURIComponent(key), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); } catch (e) { throw new Error("net"); }
+    if (r.status === 429) throw new Error("quota");
+    if (r.status === 400 || r.status === 403) { const t = await r.text(); if (/API key|API_KEY|PERMISSION|permission/.test(t)) throw new Error("key"); last = t; continue; }
+    if (!r.ok) { last = String(r.status); continue; }
+    const j = await r.json(); const txt = ((((j.candidates || [])[0] || {}).content || {}).parts || []).map(x => x.text || "").join("");
+    try { return JSON.parse(txt.replace(/```json|```/g, "").trim()); } catch (e) { last = "parse"; }
+  }
+  throw new Error("fail " + String(last).slice(0, 80));
+}
+function ReceiptScan({ docKey, icons, onSaved }) {
+  const { set } = useData();
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState(""); const [draft, setDraft] = useState(null);
+  const fileRef = useRef(null);
+  const pick = () => {
+    let key = lsGet(RCPT_KEY, "");
+    if (!key) { key = (window.prompt("عشان أقرا الفاتورة محتاج مفتاح Google Gemini المجاني:\n1) افتح aistudio.google.com/apikey\n2) اضغط Create API key\n3) الصق المفتاح هنا (بيتخزن على موبايلك بس)") || "").trim(); if (!key) return; lsSet(RCPT_KEY, key); }
+    if (fileRef.current) fileRef.current.click();
+  };
+  const onFile = async e => {
+    const f = e.target.files && e.target.files[0]; e.target.value = ""; if (!f) return;
+    setBusy(true); setErr("");
+    try {
+      const b64 = await rcptShrink(f); const out = await rcptRead(b64, lsGet(RCPT_KEY, ""));
+      const store = String(out.store || "").trim().slice(0, 40);
+      const items = (out.items || []).map(it => {
+        const amount = num(it.amount); const cat = String(it.cat || "").trim().slice(0, 30) || "أخرى";
+        const ic = (RCPT_CATS.find(c => c[1] === cat) || [])[0] || icons[cat] || (EXP_CATS.find(c => c[1] === cat) || [])[0] || "🧾";
+        return { id: uid8(), name: String(it.name || "").trim().slice(0, 70), amount, cat, ic };
+      }).filter(i => i.name && i.amount > 0);
+      if (!items.length) throw new Error("empty");
+      let date = /^\d{4}-\d{2}-\d{2}$/.test(out.date || "") ? out.date : todayStr(); if (date > todayStr()) date = todayStr();
+      setDraft({ store, date, total: num(out.total) || 0, items });
+    } catch (ex) {
+      const m = String(ex && ex.message || "");
+      if (m === "key") { lsSet(RCPT_KEY, ""); setErr("المفتاح مش مقبول. دوس تاني وحط مفتاح صح."); }
+      else if (m === "quota") setErr("وصلت للحد المجاني دلوقتي، جرّب بعد شوية.");
+      else if (m === "net") setErr("اتأكد من النت وجرّب تاني.");
+      else if (m === "empty") setErr("ماقدرتش أقرا بنود من الصورة. صوّرها أوضح وفي إضاءة كويسة.");
+      else setErr("حصلت مشكلة في قراءة الفاتورة. جرّب تاني.");
+    }
+    setBusy(false);
+  };
+  const sum = draft ? draft.items.reduce((a, i) => a + i.amount, 0) : 0;
+  const save = () => {
+    if (!draft || !draft.items.length) return;
+    const rows = draft.items.map(i => ({ id: uid8(), type: "exp", amount: Math.round(i.amount * 100) / 100, cat: i.cat, note: (i.name + (draft.store ? " (" + draft.store + ")" : "")).slice(0, 110), date: draft.date, ic: i.ic }));
+    set(docKey, d => ({ ...(d || { budget: 0 }), items: [...rows, ...((d && d.items) || [])] }));
+    const dt = draft.date, n = rows.length; setDraft(null); onSaved(dt, n);
+  };
+  return h("div", { style: { marginBottom: 10 } },
+    h("input", { ref: fileRef, type: "file", accept: "image/*", onChange: onFile, style: { display: "none" } }),
+    h("button", { onClick: pick, disabled: busy, style: { width: "100%", padding: 14, borderRadius: 16, border: "2px dashed var(--line)", background: "var(--card)", color: "var(--text)", fontWeight: 800, fontSize: 14, cursor: "pointer" } }, busy ? "⏳ بقرا الفاتورة…" : "📷 صوّر أو ارفع فاتورة"),
+    err && h("div", { style: { color: "var(--danger, #dc2626)", fontSize: 12, marginTop: 6 } }, err),
+    draft && h(Sheet, { title: "مراجعة الفاتورة" + (draft.store ? " — " + draft.store : ""), onClose: () => setDraft(null) },
+      h(Field, { label: "التاريخ" }, h("input", { type: "date", value: draft.date, max: "2100-01-01", onChange: e => setDraft(d => ({ ...d, date: e.target.value || d.date })) })),
+      h("div", null, draft.items.map((i, idx) => h("div", { key: i.id, style: { display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 0", borderTop: idx ? "1px solid var(--line)" : "none" } },
+        h("span", { style: { fontSize: 18 } }, i.ic),
+        h("div", { style: { flex: 1, minWidth: 0 } }, h("div", { style: { fontWeight: 800, fontSize: 13 } }, i.cat), h("div", { style: { fontSize: 12, color: "var(--muted)", wordBreak: "break-word" } }, i.name + (draft.store ? " (" + draft.store + ")" : ""))),
+        h("div", { style: { fontWeight: 900, fontSize: 13 } }, fmt(i.amount)),
+        h("button", { onClick: () => setDraft(d => ({ ...d, items: d.items.filter(x => x.id !== i.id) })), "aria-label": "شيل", style: { background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 16, padding: 4 } }, "✕")))),
+      h("div", { style: { display: "flex", justifyContent: "space-between", fontWeight: 900, margin: "12px 0 4px" } }, h("span", null, "إجمالي البنود"), h("span", null, fmt(sum))),
+      draft.total > 0 && Math.abs(draft.total - sum) > Math.max(2, draft.total * .02) && h("div", { style: { fontSize: 12, color: "var(--warn, #d97706)", marginBottom: 8 } }, "إجمالي الفاتورة المكتوب " + fmt(draft.total) + " — راجع البنود لو في حاجة ناقصة."),
+      h("button", { className: "btn btn-primary", style: { width: "100%", marginTop: 8 }, disabled: !draft.items.length, onClick: save }, "حفظ كمصروفات (" + draft.items.length + ")")));
+}
 function ExpensesModule({ docKey, who, ride }) {
   const { get, set } = useData();
   const doc = get(docKey, { items: [], budget: 0 });
@@ -601,6 +687,7 @@ function ExpensesModule({ docKey, who, ride }) {
     h("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
       h("button", { className: "btn btn-primary", style: { flex: 1 }, onClick: () => openAdd("exp") }, "− مصروف"),
       h("button", { className: "btn btn-ghost", style: { flex: 1 }, onClick: () => openAdd("inc") }, "+ دخل")),
+    h(ReceiptScan, { docKey, icons, onSaved: (dt, n) => { setM(monthOf(dt)); toast("اتسجّل " + n + " بند من الفاتورة ✓"); } }),
     byCat.length > 0 && h("div", { className: "card", style: { marginBottom: 10 } },
       h("div", { style: { fontWeight: 900, fontSize: 14, marginBottom: 10 } }, "المصروف حسب النوع"),
       byCat.map(([c, v]) => h("div", { key: c, style: { marginBottom: 9 } },
@@ -1453,7 +1540,13 @@ function FeedbackScreen({ user, back }) {
   const send = async () => {
     const m = msg.trim(); if (m.length < 3) { setErr("اكتب رأيك الأول."); return; }
     setBusy(true); setErr("");
-    try { const { error } = await sb.from("allinone_feedback").insert({ message: m.slice(0, 2000), contact: contact.trim().slice(0, 200) || null, app_version: APP_VERSION }); if (error) throw error; setDone(true); setMsg(""); }
+    try {
+      const dbP = sb.from("allinone_feedback").insert({ message: m.slice(0, 2000), contact: contact.trim().slice(0, 200) || null, app_version: APP_VERSION }).then(r => { if (r.error) throw r.error; });
+      // نسخة على الإيميل (FormSubmit) — أول مرة بس لازم تفعّل الإيميل من رسالة التفعيل
+      const mailP = fetch("https://formsubmit.co/ajax/mohamedhossamomara01@gmail.com", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ _subject: "AllinOne - فيدباك جديد", message: m.slice(0, 2000), contact: contact.trim().slice(0, 200) || "-", account: (user && user.email) || "-", version: APP_VERSION, _template: "table", _captcha: "false" }) }).then(r => { if (!r.ok) throw new Error("mail"); });
+      const rs = await Promise.allSettled([dbP, mailP]);
+      if (rs.every(x => x.status === "rejected")) throw new Error("both");
+      setDone(true); setMsg(""); }
     catch (e) { setErr("ماتبعتش. اتأكد من النت وجرّب تاني."); }
     setBusy(false);
   };
@@ -1630,6 +1723,9 @@ function Shell({ user }) {
       h("img", { src: "icon-192.png", alt: "الرئيسية", title: "الرئيسية", onClick: goHome, width: 34, height: 34, style: { borderRadius: 10, cursor: "pointer" } }),
       h("div", { style: { flex: 1, fontWeight: 900, fontSize: 18 } }, title),
       h("span", { title: sync === "error" ? "في تعديلات لسه ماتحفظتش على السحابة" : "النسخ الاحتياطية", onClick: goBackup, role: "button", "aria-label": "النسخ الاحتياطية", style: { fontSize: 17, cursor: "pointer", padding: 4 } }, syncTxt),
+      cur === "home" && h("div", { onClick: () => go("feedback"), role: "button", "aria-label": "ابعت اقتراحك أو مشكلتك", style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 2, cursor: "pointer", width: 64 } },
+        h("span", { className: "btn btn-ghost", style: { padding: "6px 11px", pointerEvents: "none" } }, "✉️"),
+        h("span", { style: { fontSize: 9, color: "var(--muted)", lineHeight: 1.25, textAlign: "center" } }, "ابعت اقتراحك أو مشكلتك")),
       cur === "settings" && h("button", { className: "btn btn-ghost", onClick: () => go("feedback"), "aria-label": "ابعت فيدباك", title: "ابعت فيدباك", style: { padding: "6px 11px" } }, "✉️"),
       cur !== "settings" && cur !== "feedback" && h("button", { className: "btn btn-ghost", onClick: () => go("settings"), "aria-label": "الإعدادات", style: { padding: "6px 11px" } }, "⚙️")),
     adhanTap && h("div", { style: { position: "fixed", bottom: "calc(20px + env(safe-area-inset-bottom))", left: 0, right: 0, display: "flex", flexWrap: "wrap", justifyContent: "center", alignItems: "center", gap: 8, zIndex: 60, padding: "0 12px" } },
