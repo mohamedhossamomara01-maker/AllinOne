@@ -1,5 +1,5 @@
 // Service Worker: بيخزّن التطبيق والمكتبات عشان يفتح من غير نت (البيانات نفسها بتتخزن في التطبيق)
-const SHELL = "allinone-shell-v10";
+const SHELL = "allinone-shell-v11";
 const LIBS = "allinone-libs-v1";
 const SHELL_FILES = ["./", "./index.html", "./app.js", "./athkar.js", "./manifest.json", "./icon-192.png", "./icon-512.png", "./lottie-pushup.json", "./lottie-walk.json", "./lottie-go.json", "./lottie-clock.json", "./lottie-dog.json"];
 const LIB_URLS = [

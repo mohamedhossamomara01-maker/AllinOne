@@ -535,7 +535,6 @@ function FixedSheet({ onClose }) {
 }
 
 // ── قراءة الفاتورة من الصورة (Google Gemini — مفتاح مجاني بيتخزن على موبايلك بس) ──
-const RCPT_KEY = "allinone:geminiKey";
 const RCPT_CATS = [["🥩", "لحوم وفراخ"], ["🥬", "خضار وفاكهة"], ["🧀", "ألبان وجبن"], ["🧂", "عطارة"], ["🧼", "منظفات"], ["🍞", "مخبوزات"], ["🥤", "مشروبات"], ["🍫", "سناكس وحلويات"], ["🧴", "عناية شخصية"]];
 async function rcptShrink(file) {
   const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
@@ -545,7 +544,20 @@ async function rcptShrink(file) {
   c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
   return c.toDataURL("image/jpeg", 0.82).split(",")[1];
 }
-async function rcptRead(b64, key) {
+// نداء الذكاء الاصطناعي عن طريق Supabase Edge Function (ai-proxy) — المفتاح على السيرفر ومحدش محتاج يعمل مفتاح
+async function aiCall({ kind, prompt, image_b64, schema, example }) {
+  const { data, error } = await sb.functions.invoke("ai-proxy", { body: { kind, prompt, image_b64, schema, example } });
+  if (error) {
+    let st = 0; try { st = (error.context && error.context.status) || 0; } catch (e) {}
+    if (error.name === "FunctionsFetchError") throw new Error("net");
+    if (st === 429) { let d = {}; try { d = await error.context.json(); } catch (e) {} throw new Error(d.error === "busy" ? "busy" : "quota"); }
+    if (st === 401) throw new Error("auth");
+    if (st === 404) throw new Error("nofn");
+    throw new Error("fail " + st);
+  }
+  return data && data.text;
+}
+async function rcptRead(b64) {
   const catList = RCPT_CATS.map(c => c[1]).concat(EXP_CATS.filter(c => c[1] !== "أكل وسوبر ماركت").map(c => c[1]));
   const prompt = "دي صورة فاتورة شراء (غالبًا من محل في مصر وبالعربي). استخرج منها JSON بالشكل المطلوب.\n" +
     "- store: اسم المحل زي ما هو مكتوب في الفاتورة (قصير).\n- date: تاريخ الفاتورة بصيغة YYYY-MM-DD لو ظاهر وإلا سيبه فاضي.\n- total: إجمالي الفاتورة لو ظاهر وإلا 0.\n" +
@@ -553,32 +565,20 @@ async function rcptRead(b64, key) {
     "التصنيف لازم يكون واحد من القايمة دي بالظبط لو مناسب: " + catList.join("، ") + ". لو مفيش مناسب اعمل تصنيف عربي قصير (كلمتين بالكتير).\n" +
     "أمثلة: لحمة مفرومة أو فراخ → لحوم وفراخ، توابل أو إندومي أو مكرونة أو أرز أو سكر أو زيت أكل → عطارة، شامبو أو زيت شعر أو صابون أو مسحوق غسيل → منظفات.\n" +
     "ماتعتبرش الإجمالي أو المدفوع أو الباقي أو الخصم بند. رسوم التوصيل أو الخدمة أو الضريبة تتحط بند تصنيفه أخرى. اكتب الأسماء بالعربي زي الفاتورة. سطر مش مقروء تجاهله. رجّع JSON بس.";
-  const body = { contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: "image/jpeg", data: b64 } }] }], generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: { type: "OBJECT", properties: { store: { type: "STRING" }, date: { type: "STRING" }, total: { type: "NUMBER" }, items: { type: "ARRAY", items: { type: "OBJECT", properties: { name: { type: "STRING" }, amount: { type: "NUMBER" }, cat: { type: "STRING" } }, required: ["name", "amount", "cat"] } } }, required: ["items"] } } };
-  let last = "";
-  for (const model of ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"]) {
-    let r; try { r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + encodeURIComponent(key), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); } catch (e) { throw new Error("net"); }
-    if (r.status === 429) throw new Error("quota");
-    if (r.status === 400 || r.status === 403) { const t = await r.text(); if (/API key|API_KEY|PERMISSION|permission/.test(t)) throw new Error("key"); last = t; continue; }
-    if (!r.ok) { last = String(r.status); continue; }
-    const j = await r.json(); const txt = ((((j.candidates || [])[0] || {}).content || {}).parts || []).map(x => x.text || "").join("");
-    try { return JSON.parse(txt.replace(/```json|```/g, "").trim()); } catch (e) { last = "parse"; }
-  }
-  throw new Error("fail " + String(last).slice(0, 80));
+  const schema = { type: "OBJECT", properties: { store: { type: "STRING" }, date: { type: "STRING" }, total: { type: "NUMBER" }, items: { type: "ARRAY", items: { type: "OBJECT", properties: { name: { type: "STRING" }, amount: { type: "NUMBER" }, cat: { type: "STRING" } }, required: ["name", "amount", "cat"] } } }, required: ["items"] };
+  const txt = await aiCall({ kind: "receipt", prompt, image_b64: b64, schema, example: '{"store":"اسم المحل","date":"YYYY-MM-DD","total":0,"items":[{"name":"2 ك لحمة مفرومة","amount":0,"cat":"لحوم وفراخ"}]}' });
+  try { return JSON.parse(String(txt || "").replace(/```json|```/g, "").trim()); } catch (e) { throw new Error("parse"); }
 }
 function ReceiptScan({ docKey, icons, onSaved }) {
   const { set } = useData();
   const [busy, setBusy] = useState(false); const [err, setErr] = useState(""); const [draft, setDraft] = useState(null);
   const fileRef = useRef(null);
-  const pick = () => {
-    let key = lsGet(RCPT_KEY, "");
-    if (!key) { key = (window.prompt("عشان أقرا الفاتورة محتاج مفتاح Google Gemini المجاني:\n1) افتح aistudio.google.com/apikey\n2) اضغط Create API key\n3) الصق المفتاح هنا (بيتخزن على موبايلك بس)") || "").trim(); if (!key) return; lsSet(RCPT_KEY, key); }
-    if (fileRef.current) fileRef.current.click();
-  };
+  const pick = () => { if (fileRef.current) fileRef.current.click(); };
   const onFile = async e => {
     const f = e.target.files && e.target.files[0]; e.target.value = ""; if (!f) return;
     setBusy(true); setErr("");
     try {
-      const b64 = await rcptShrink(f); const out = await rcptRead(b64, lsGet(RCPT_KEY, ""));
+      const b64 = await rcptShrink(f); const out = await rcptRead(b64);
       const store = String(out.store || "").trim().slice(0, 40);
       const items = (out.items || []).map(it => {
         const amount = num(it.amount); const cat = String(it.cat || "").trim().slice(0, 30) || "أخرى";
@@ -590,8 +590,10 @@ function ReceiptScan({ docKey, icons, onSaved }) {
       setDraft({ store, date, total: num(out.total) || 0, items });
     } catch (ex) {
       const m = String(ex && ex.message || "");
-      if (m === "key") { lsSet(RCPT_KEY, ""); setErr("المفتاح مش مقبول. دوس تاني وحط مفتاح صح."); }
-      else if (m === "quota") setErr("وصلت للحد المجاني دلوقتي، جرّب بعد شوية.");
+      if (m === "auth") setErr("سجّل دخول الأول وبعدين جرّب تاني.");
+      else if (m === "nofn") setErr("خدمة قراءة الفواتير لسه مش متفعّلة على السيرفر.");
+      else if (m === "quota") setErr("وصلت للحد اليومي من قراءة الفواتير. جرّب بكرة بإذن الله.");
+      else if (m === "busy") setErr("الخدمة مزدحمة دلوقتي، جرّب بعد شوية.");
       else if (m === "net") setErr("اتأكد من النت وجرّب تاني.");
       else if (m === "empty") setErr("ماقدرتش أقرا بنود من الصورة. صوّرها أوضح وفي إضاءة كويسة.");
       else setErr("حصلت مشكلة في قراءة الفاتورة. جرّب تاني.");
