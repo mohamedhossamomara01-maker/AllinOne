@@ -547,7 +547,7 @@ async function rcptShrink(file, maxPx, q) {
 async function rcptRead(b64) {
   const catList = RCPT_CATS.map(c => c[1]).concat(EXP_CATS.filter(c => c[1] !== "أكل وسوبر ماركت").map(c => c[1]));
   const prompt = "دي صورة فاتورة شراء (غالبًا من محل في مصر وبالعربي). استخرج منها JSON بالشكل المطلوب.\n" +
-    "- store: اسم المحل زي ما هو مكتوب في الفاتورة (قصير).\n- date: تاريخ الفاتورة بصيغة YYYY-MM-DD لو ظاهر وإلا سيبه فاضي (اسم الفرع زي '6 أكتوبر' مش تاريخ).\n" +
+    "- store: اسم المحل بس زي مكتوب في الفاتورة من غير اسم الفرع أو المدينة (مثال: 'بيت الجملة - 6 أكتوبر' ← 'بيت الجملة').\n- date: تاريخ الفاتورة بصيغة YYYY-MM-DD لو ظاهر وإلا سيبه فاضي (اسم الفرع زي '6 أكتوبر' مش تاريخ).\n" +
     "- items: كل بند اتشترى. أعمدة الفاتورة: الصنف، السعر (سعر الوحدة أو الكيلو)، الكمية، القيمة (= السعر × الكمية). name = الكمية + اسم الصنف زي مكتوب (مثال: 2 اندومي نكهة الدجاج)، price = رقم عمود السعر، qty = رقم عمود الكمية، amount = رقم عمود القيمة زي مطبوع (قبل الخصم)، discount = لو تحت البند سطر 'خصم' بقيمة (غالبًا بعلامة سالب) حطها هنا كرقم موجب وإلا 0، cat = التصنيف. الخصم تحت أي بند بيتبع البند اللي فوقه بس.\n" +
     "- total: إجمالي الفاتورة النهائي المستحق بعد كل الخصومات.\n" +
     "التصنيف لازم يكون واحد من القايمة دي بالظبط لو مناسب: " + catList.join("، ") + ". لو مفيش مناسب اعمل تصنيف عربي قصير (كلمتين بالكتير).\n" +
@@ -571,10 +571,10 @@ function ReceiptScan({ docKey, icons, onSaved }) {
       try { out = await rcptRead(await rcptShrink(f, 1400, 0.8)); }
       catch (e1) { if (/سجّل/.test(String(e1 && e1.message || ""))) throw e1; out = await rcptRead(await rcptShrink(f, 1000, 0.65)); }
       const store = String(out.store || "").trim().slice(0, 40);
-      const items = (out.items || []).map(it => {
+      const items = (out.items || []).filter(it => String(it.name || "").trim()).map(it => {
         const q = num(it.qty), pr = num(it.price), pq = q > 0 && pr > 0 ? Math.round(q * pr * 100) / 100 : 0; let gross = num(it.amount); if (pq && (gross <= 0 || Math.abs(gross - pq) > Math.max(0.5, pq * 0.01))) gross = pq; const amount = Math.max(0, Math.round((gross - Math.abs(num(it.discount))) * 100) / 100); const cat = String(it.cat || "").trim().slice(0, 30) || "أخرى";
         const ic = (RCPT_CATS.find(c => c[1] === cat) || [])[0] || icons[cat] || (EXP_CATS.find(c => c[1] === cat) || [])[0] || "🧾";
-        return { id: uid8(), name: String(it.name || "").trim().slice(0, 70), amount, amt: String(amount), cat, ic };
+        return { id: uid8(), name: String(it.name || "").trim().slice(0, 70) + (store ? " (" + store + ")" : ""), amount, amt: String(amount), cat, ic };
       }).filter(i => i.name && i.amount > 0);
       if (!items.length) throw new Error("empty");
       let date = /^\d{4}-\d{2}-\d{2}$/.test(out.date || "") ? out.date : todayStr(); if (date > todayStr()) date = todayStr();
@@ -590,12 +590,13 @@ function ReceiptScan({ docKey, icons, onSaved }) {
   };
   const onFile = e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; setAsk(false); if (f) run(f); };
   const upd = (id, k, v) => setDraft(d => ({ ...d, items: d.items.map(x => x.id === id ? { ...x, [k]: v } : x) }));
+  const setStoreName = v => setDraft(d => ({ ...d, store: v, items: d.items.map(x => { const old = d.store ? " (" + d.store + ")" : ""; const base = old && x.name.endsWith(old) ? x.name.slice(0, -old.length) : x.name; return { ...x, name: base + (v ? " (" + v + ")" : "") }; }) }));
   const sum = draft ? draft.items.reduce((a, i) => a + num(i.amt), 0) : 0;
   const save = () => {
     if (!draft) return;
     const ok = draft.items.filter(i => num(i.amt) > 0 && String(i.name).trim());
     if (!ok.length) return;
-    const rows = ok.map(i => ({ id: uid8(), type: "exp", amount: Math.round(num(i.amt) * 100) / 100, cat: String(i.cat || "").trim() || "أخرى", note: (String(i.name).trim() + (draft.store ? " (" + draft.store + ")" : "")).slice(0, 110), date: draft.date, ic: i.ic }));
+    const rows = ok.map(i => ({ id: uid8(), type: "exp", amount: Math.round(num(i.amt) * 100) / 100, cat: String(i.cat || "").trim() || "أخرى", note: String(i.name).trim().slice(0, 140), date: draft.date, ic: i.ic }));
     set(docKey, d => ({ ...(d || { budget: 0 }), items: [...rows, ...((d && d.items) || [])] }));
     const dt = draft.date, n = rows.length; setDraft(null); onSaved(dt, n);
   };
@@ -610,6 +611,7 @@ function ReceiptScan({ docKey, icons, onSaved }) {
       h("button", { className: "btn btn-ghost", style: { width: "100%" }, onClick: () => galRef.current && galRef.current.click() }, "🖼️ اختار من المعرض")),
     draft && h(Sheet, { title: "مراجعة الفاتورة" + (draft.store ? " — " + draft.store : ""), onClose: () => setDraft(null) },
       h(Field, { label: "التاريخ" }, h("input", { type: "date", value: draft.date, max: "2100-01-01", onChange: e => setDraft(d => ({ ...d, date: e.target.value || d.date })) })),
+      h(Field, { label: "اسم المحل (بيتكتب جنب كل صنف)" }, h("input", { type: "text", value: draft.store, onChange: e => setStoreName(e.target.value) })),
       h("div", { style: { fontSize: 12, color: "var(--muted)", margin: "4px 0 8px" } }, "راجع البنود وعدّل أي غلط قبل الحفظ."),
       h("div", null, draft.items.map((i, idx) => h("div", { key: i.id, style: { padding: "10px 0", borderTop: idx ? "1px solid var(--line)" : "none" } },
         h("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 6 } },
