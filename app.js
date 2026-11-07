@@ -548,12 +548,12 @@ async function rcptRead(b64) {
   const catList = RCPT_CATS.map(c => c[1]).concat(EXP_CATS.filter(c => c[1] !== "أكل وسوبر ماركت").map(c => c[1]));
   const prompt = "دي صورة فاتورة شراء (غالبًا من محل في مصر وبالعربي). استخرج منها JSON بالشكل المطلوب.\n" +
     "- store: اسم المحل زي ما هو مكتوب في الفاتورة (قصير).\n- date: تاريخ الفاتورة بصيغة YYYY-MM-DD لو ظاهر وإلا سيبه فاضي (اسم الفرع زي '6 أكتوبر' مش تاريخ).\n" +
-    "- items: كل بند اتشترى: name = اسم البند والكمية زي مكتوبين (مثال: 2 ك لحمة مفرومة)، amount = قيمة البند قبل الخصم (عمود القيمة) كرقم، discount = لو تحت البند سطر 'خصم' بقيمة (غالبًا بعلامة سالب) حطها هنا كرقم موجب وإلا 0، cat = التصنيف. الخصم اللي تحت أي بند بيتبع البند اللي فوقه.\n" +
+    "- items: كل بند اتشترى. أعمدة الفاتورة: الصنف، السعر (سعر الوحدة أو الكيلو)، الكمية، القيمة (= السعر × الكمية). name = الكمية + اسم الصنف زي مكتوب (مثال: 2 اندومي نكهة الدجاج)، price = رقم عمود السعر، qty = رقم عمود الكمية، amount = رقم عمود القيمة زي مطبوع (قبل الخصم)، discount = لو تحت البند سطر 'خصم' بقيمة (غالبًا بعلامة سالب) حطها هنا كرقم موجب وإلا 0، cat = التصنيف. الخصم تحت أي بند بيتبع البند اللي فوقه بس.\n" +
     "- total: إجمالي الفاتورة النهائي المستحق بعد كل الخصومات.\n" +
     "التصنيف لازم يكون واحد من القايمة دي بالظبط لو مناسب: " + catList.join("، ") + ". لو مفيش مناسب اعمل تصنيف عربي قصير (كلمتين بالكتير).\n" +
     "أمثلة: لحمة مفرومة أو فراخ → لحوم وفراخ، توابل أو إندومي أو مكرونة أو أرز أو سكر أو زيت أكل → عطارة، شامبو أو زيت شعر أو صابون أو مسحوق غسيل → منظفات.\n" +
     "ماتعتبرش الإجمالي أو المدفوع أو الباقي أو الخصم بند. رسوم التوصيل أو الخدمة أو الضريبة تتحط بند تصنيفه أخرى. اكتب الأسماء بالعربي زي الفاتورة. سطر مش مقروء تجاهله. رجّع JSON بس.";
-  const full = prompt + "\nاقرا الفاتورة سطر سطر بالترتيب وبدقة، وحوّل الأرقام العربية (٠١٢٣) لأرقام إنجليزية، ومتخمّنش أي رقم أو اسم مش واضح (سيب البند ده). رجّع JSON فقط من غير أي شرح ولا علامات كود، بالشكل ده: " + '{"store":"اسم المحل","date":"YYYY-MM-DD","total":0,"items":[{"name":"2 ك لحمة مفرومة","amount":0,"discount":0,"cat":"لحوم وفراخ"}]}';
+  const full = prompt + "\nاقرا الفاتورة سطر سطر بالترتيب وبدقة، وحوّل الأرقام العربية (٠١٢٣) لأرقام إنجليزية، ومتخمّنش أي رقم أو اسم مش واضح (سيب البند ده). رجّع JSON فقط من غير أي شرح ولا علامات كود، بالشكل ده: " + '{"store":"اسم المحل","date":"YYYY-MM-DD","total":0,"items":[{"name":"2 ك لحمة مفرومة","price":0,"qty":0,"amount":0,"discount":0,"cat":"لحوم وفراخ"}]}';
   const bin = atob(b64), u8 = new Uint8Array(bin.length); for (let k = 0; k < bin.length; k++) u8[k] = bin.charCodeAt(k);
   const blob = new Blob([u8], { type: "image/jpeg" });
   const txt = await Promise.race([askAI(full, blob), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 40000))]);
@@ -572,7 +572,7 @@ function ReceiptScan({ docKey, icons, onSaved }) {
       catch (e1) { if (/سجّل/.test(String(e1 && e1.message || ""))) throw e1; out = await rcptRead(await rcptShrink(f, 1000, 0.65)); }
       const store = String(out.store || "").trim().slice(0, 40);
       const items = (out.items || []).map(it => {
-        const amount = Math.max(0, Math.round((num(it.amount) - Math.abs(num(it.discount))) * 100) / 100); const cat = String(it.cat || "").trim().slice(0, 30) || "أخرى";
+        const q = num(it.qty), pr = num(it.price), pq = q > 0 && pr > 0 ? Math.round(q * pr * 100) / 100 : 0; let gross = num(it.amount); if (pq && (gross <= 0 || Math.abs(gross - pq) > Math.max(0.5, pq * 0.01))) gross = pq; const amount = Math.max(0, Math.round((gross - Math.abs(num(it.discount))) * 100) / 100); const cat = String(it.cat || "").trim().slice(0, 30) || "أخرى";
         const ic = (RCPT_CATS.find(c => c[1] === cat) || [])[0] || icons[cat] || (EXP_CATS.find(c => c[1] === cat) || [])[0] || "🧾";
         return { id: uid8(), name: String(it.name || "").trim().slice(0, 70), amount, amt: String(amount), cat, ic };
       }).filter(i => i.name && i.amount > 0);
