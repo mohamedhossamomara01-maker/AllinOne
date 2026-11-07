@@ -536,13 +536,13 @@ function FixedSheet({ onClose }) {
 
 // ── قراءة الفاتورة من الصورة (Google Gemini — مفتاح مجاني بيتخزن على موبايلك بس) ──
 const RCPT_CATS = [["🥩", "لحوم وفراخ"], ["🥬", "خضار وفاكهة"], ["🧀", "ألبان وجبن"], ["🧂", "عطارة"], ["🧼", "منظفات"], ["🍞", "مخبوزات"], ["🥤", "مشروبات"], ["🍫", "سناكس وحلويات"], ["🧴", "عناية شخصية"]];
-async function rcptShrink(file) {
+async function rcptShrink(file, maxPx, q) {
   const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
   const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
-  const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+  const k = Math.min(1, (maxPx || 1400) / Math.max(img.width, img.height));
   const c = document.createElement("canvas"); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
   c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
-  return c.toDataURL("image/jpeg", 0.82).split(",")[1];
+  return c.toDataURL("image/jpeg", q || 0.8).split(",")[1];
 }
 async function rcptRead(b64) {
   const catList = RCPT_CATS.map(c => c[1]).concat(EXP_CATS.filter(c => c[1] !== "أكل وسوبر ماركت").map(c => c[1]));
@@ -552,59 +552,72 @@ async function rcptRead(b64) {
     "التصنيف لازم يكون واحد من القايمة دي بالظبط لو مناسب: " + catList.join("، ") + ". لو مفيش مناسب اعمل تصنيف عربي قصير (كلمتين بالكتير).\n" +
     "أمثلة: لحمة مفرومة أو فراخ → لحوم وفراخ، توابل أو إندومي أو مكرونة أو أرز أو سكر أو زيت أكل → عطارة، شامبو أو زيت شعر أو صابون أو مسحوق غسيل → منظفات.\n" +
     "ماتعتبرش الإجمالي أو المدفوع أو الباقي أو الخصم بند. رسوم التوصيل أو الخدمة أو الضريبة تتحط بند تصنيفه أخرى. اكتب الأسماء بالعربي زي الفاتورة. سطر مش مقروء تجاهله. رجّع JSON بس.";
-  const full = prompt + "\nرجّع JSON فقط من غير أي شرح ولا علامات كود، بالشكل ده: " + '{"store":"اسم المحل","date":"YYYY-MM-DD","total":0,"items":[{"name":"2 ك لحمة مفرومة","amount":0,"cat":"لحوم وفراخ"}]}';
+  const full = prompt + "\nاقرا الفاتورة سطر سطر بالترتيب وبدقة، وحوّل الأرقام العربية (٠١٢٣) لأرقام إنجليزية، ومتخمّنش أي رقم أو اسم مش واضح (سيب البند ده). رجّع JSON فقط من غير أي شرح ولا علامات كود، بالشكل ده: " + '{"store":"اسم المحل","date":"YYYY-MM-DD","total":0,"items":[{"name":"2 ك لحمة مفرومة","amount":0,"cat":"لحوم وفراخ"}]}';
   const bin = atob(b64), u8 = new Uint8Array(bin.length); for (let k = 0; k < bin.length; k++) u8[k] = bin.charCodeAt(k);
   const blob = new Blob([u8], { type: "image/jpeg" });
-  const txt = await Promise.race([askAI(full, blob), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 60000))]);
+  const txt = await Promise.race([askAI(full, blob), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 40000))]);
   const mm = /\{[\s\S]*\}/.exec(String(txt || "")); if (!mm) throw new Error("parse");
   try { return JSON.parse(mm[0]); } catch (e) { throw new Error("parse"); }
 }
 function ReceiptScan({ docKey, icons, onSaved }) {
   const { set } = useData();
-  const [busy, setBusy] = useState(false); const [err, setErr] = useState(""); const [draft, setDraft] = useState(null);
-  const fileRef = useRef(null);
-  const pick = () => { if (fileRef.current) fileRef.current.click(); };
-  const onFile = async e => {
-    const f = e.target.files && e.target.files[0]; e.target.value = ""; if (!f) return;
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState(""); const [draft, setDraft] = useState(null); const [ask, setAsk] = useState(false);
+  const camRef = useRef(null), galRef = useRef(null);
+  const run = async f => {
     setBusy(true); setErr("");
     try {
-      const b64 = await rcptShrink(f); const out = await rcptRead(b64);
+      let out;
+      try { out = await rcptRead(await rcptShrink(f, 1400, 0.8)); }
+      catch (e1) { if (/سجّل/.test(String(e1 && e1.message || ""))) throw e1; out = await rcptRead(await rcptShrink(f, 1000, 0.65)); }
       const store = String(out.store || "").trim().slice(0, 40);
       const items = (out.items || []).map(it => {
         const amount = num(it.amount); const cat = String(it.cat || "").trim().slice(0, 30) || "أخرى";
         const ic = (RCPT_CATS.find(c => c[1] === cat) || [])[0] || icons[cat] || (EXP_CATS.find(c => c[1] === cat) || [])[0] || "🧾";
-        return { id: uid8(), name: String(it.name || "").trim().slice(0, 70), amount, cat, ic };
+        return { id: uid8(), name: String(it.name || "").trim().slice(0, 70), amount, amt: String(amount), cat, ic };
       }).filter(i => i.name && i.amount > 0);
       if (!items.length) throw new Error("empty");
       let date = /^\d{4}-\d{2}-\d{2}$/.test(out.date || "") ? out.date : todayStr(); if (date > todayStr()) date = todayStr();
       setDraft({ store, date, total: num(out.total) || 0, items });
     } catch (ex) {
       const m = String(ex && ex.message || "");
-      if (m === "timeout") setErr("الطلب أخد وقت طويل، جرّب تاني بصورة أصغر أو نت أحسن.");
+      if (m === "timeout") setErr("الخدمة اتأخرت في الرد. جرّب تاني كمان شوية.");
       else if (m === "empty" || m === "parse") setErr("ماقدرتش أقرا بنود من الصورة. صوّرها أوضح وفي إضاءة كويسة.");
       else if (/Failed to fetch|NetworkError|Load failed/i.test(m)) setErr("اتأكد من النت وجرّب تاني.");
       else setErr(m ? m.slice(0, 120) : "حصلت مشكلة في قراءة الفاتورة. جرّب تاني.");
     }
     setBusy(false);
   };
-  const sum = draft ? draft.items.reduce((a, i) => a + i.amount, 0) : 0;
+  const onFile = e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; setAsk(false); if (f) run(f); };
+  const upd = (id, k, v) => setDraft(d => ({ ...d, items: d.items.map(x => x.id === id ? { ...x, [k]: v } : x) }));
+  const sum = draft ? draft.items.reduce((a, i) => a + num(i.amt), 0) : 0;
   const save = () => {
-    if (!draft || !draft.items.length) return;
-    const rows = draft.items.map(i => ({ id: uid8(), type: "exp", amount: Math.round(i.amount * 100) / 100, cat: i.cat, note: (i.name + (draft.store ? " (" + draft.store + ")" : "")).slice(0, 110), date: draft.date, ic: i.ic }));
+    if (!draft) return;
+    const ok = draft.items.filter(i => num(i.amt) > 0 && String(i.name).trim());
+    if (!ok.length) return;
+    const rows = ok.map(i => ({ id: uid8(), type: "exp", amount: Math.round(num(i.amt) * 100) / 100, cat: String(i.cat || "").trim() || "أخرى", note: (String(i.name).trim() + (draft.store ? " (" + draft.store + ")" : "")).slice(0, 110), date: draft.date, ic: i.ic }));
     set(docKey, d => ({ ...(d || { budget: 0 }), items: [...rows, ...((d && d.items) || [])] }));
     const dt = draft.date, n = rows.length; setDraft(null); onSaved(dt, n);
   };
+  const inp = { width: "100%", boxSizing: "border-box", padding: "7px 10px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--card)", color: "var(--text)", fontSize: 13, fontFamily: "inherit" };
   return h("div", { style: { marginBottom: 10 } },
-    h("input", { ref: fileRef, type: "file", accept: "image/*", onChange: onFile, style: { display: "none" } }),
-    h("button", { onClick: pick, disabled: busy, style: { width: "100%", padding: 14, borderRadius: 16, border: "2px dashed var(--line)", background: "var(--card)", color: "var(--text)", fontWeight: 800, fontSize: 14, cursor: "pointer" } }, busy ? "⏳ بقرا الفاتورة…" : "📷 صوّر أو ارفع فاتورة"),
+    h("input", { ref: camRef, type: "file", accept: "image/*", capture: "environment", onChange: onFile, style: { display: "none" } }),
+    h("input", { ref: galRef, type: "file", accept: "image/*", onChange: onFile, style: { display: "none" } }),
+    h("button", { onClick: () => setAsk(true), disabled: busy, style: { width: "100%", padding: 14, borderRadius: 16, border: "2px dashed var(--line)", background: "var(--card)", color: "var(--text)", fontWeight: 800, fontSize: 14, cursor: "pointer" } }, busy ? "⏳ بقرا الفاتورة… (ممكن ياخد نص دقيقة)" : "📷 صوّر أو ارفع فاتورة"),
     err && h("div", { style: { color: "var(--danger, #dc2626)", fontSize: 12, marginTop: 6 } }, err),
+    ask && h(Sheet, { title: "إضافة فاتورة", onClose: () => setAsk(false) },
+      h("button", { className: "btn btn-primary", style: { width: "100%", marginBottom: 8 }, onClick: () => camRef.current && camRef.current.click() }, "📷 صوّر بالكاميرا"),
+      h("button", { className: "btn btn-ghost", style: { width: "100%" }, onClick: () => galRef.current && galRef.current.click() }, "🖼️ اختار من المعرض")),
     draft && h(Sheet, { title: "مراجعة الفاتورة" + (draft.store ? " — " + draft.store : ""), onClose: () => setDraft(null) },
       h(Field, { label: "التاريخ" }, h("input", { type: "date", value: draft.date, max: "2100-01-01", onChange: e => setDraft(d => ({ ...d, date: e.target.value || d.date })) })),
-      h("div", null, draft.items.map((i, idx) => h("div", { key: i.id, style: { display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 0", borderTop: idx ? "1px solid var(--line)" : "none" } },
-        h("span", { style: { fontSize: 18 } }, i.ic),
-        h("div", { style: { flex: 1, minWidth: 0 } }, h("div", { style: { fontWeight: 800, fontSize: 13 } }, i.cat), h("div", { style: { fontSize: 12, color: "var(--muted)", wordBreak: "break-word" } }, i.name + (draft.store ? " (" + draft.store + ")" : ""))),
-        h("div", { style: { fontWeight: 900, fontSize: 13 } }, fmt(i.amount)),
-        h("button", { onClick: () => setDraft(d => ({ ...d, items: d.items.filter(x => x.id !== i.id) })), "aria-label": "شيل", style: { background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 16, padding: 4 } }, "✕")))),
+      h("div", { style: { fontSize: 12, color: "var(--muted)", margin: "4px 0 8px" } }, "راجع البنود وعدّل أي غلط قبل الحفظ."),
+      h("div", null, draft.items.map((i, idx) => h("div", { key: i.id, style: { padding: "10px 0", borderTop: idx ? "1px solid var(--line)" : "none" } },
+        h("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 6 } },
+          h("span", { style: { fontSize: 18 } }, i.ic),
+          h("input", { style: { ...inp, flex: 1, fontWeight: 800 }, value: i.cat, onChange: e => upd(i.id, "cat", e.target.value) }),
+          h("button", { onClick: () => setDraft(d => ({ ...d, items: d.items.filter(x => x.id !== i.id) })), "aria-label": "شيل", style: { background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 18, padding: 4 } }, "✕")),
+        h("div", { style: { display: "flex", gap: 6 } },
+          h("input", { style: { ...inp, flex: 1 }, value: i.name, onChange: e => upd(i.id, "name", e.target.value) }),
+          h("input", { style: { ...inp, width: 90, textAlign: "center", fontWeight: 800 }, inputMode: "decimal", value: i.amt, onChange: e => upd(i.id, "amt", e.target.value) }))))),
       h("div", { style: { display: "flex", justifyContent: "space-between", fontWeight: 900, margin: "12px 0 4px" } }, h("span", null, "إجمالي البنود"), h("span", null, fmt(sum))),
       draft.total > 0 && Math.abs(draft.total - sum) > Math.max(2, draft.total * .02) && h("div", { style: { fontSize: 12, color: "var(--warn, #d97706)", marginBottom: 8 } }, "إجمالي الفاتورة المكتوب " + fmt(draft.total) + " — راجع البنود لو في حاجة ناقصة."),
       h("button", { className: "btn btn-primary", style: { width: "100%", marginTop: 8 }, disabled: !draft.items.length, onClick: save }, "حفظ كمصروفات (" + draft.items.length + ")")));
@@ -1712,9 +1725,9 @@ function Shell({ user }) {
       h("img", { src: "icon-192.png", alt: "الرئيسية", title: "الرئيسية", onClick: goHome, width: 34, height: 34, style: { borderRadius: 10, cursor: "pointer" } }),
       h("div", { style: { flex: 1, fontWeight: 900, fontSize: 18 } }, title),
       h("span", { title: sync === "error" ? "في تعديلات لسه ماتحفظتش على السحابة" : "النسخ الاحتياطية", onClick: goBackup, role: "button", "aria-label": "النسخ الاحتياطية", style: { fontSize: 17, cursor: "pointer", padding: 4 } }, syncTxt),
-      cur === "home" && h("div", { onClick: () => go("feedback"), role: "button", "aria-label": "ابعت اقتراحك أو مشكلتك", style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 2, cursor: "pointer", width: 64 } },
-        h("span", { className: "btn btn-ghost", style: { padding: "6px 11px", pointerEvents: "none" } }, "✉️"),
-        h("span", { style: { fontSize: 9, color: "var(--muted)", lineHeight: 1.25, textAlign: "center" } }, "ابعت اقتراحك أو مشكلتك")),
+      cur === "home" && h("div", { style: { position: "relative" } },
+        h("button", { className: "btn btn-ghost", onClick: () => go("feedback"), "aria-label": "ابعت اقتراحك أو مشكلتك", style: { padding: "6px 13px" } }, "✉️"),
+        h("span", { onClick: () => go("feedback"), style: { position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", marginTop: 3, fontSize: 9, color: "var(--muted)", lineHeight: 1.25, textAlign: "center", width: 74, cursor: "pointer" } }, "ابعت اقتراحك أو مشكلتك")),
       cur === "settings" && h("button", { className: "btn btn-ghost", onClick: () => go("feedback"), "aria-label": "ابعت فيدباك", title: "ابعت فيدباك", style: { padding: "6px 11px" } }, "✉️"),
       cur !== "settings" && cur !== "feedback" && h("button", { className: "btn btn-ghost", onClick: () => go("settings"), "aria-label": "الإعدادات", style: { padding: "6px 11px" } }, "⚙️")),
     adhanTap && h("div", { style: { position: "fixed", bottom: "calc(20px + env(safe-area-inset-bottom))", left: 0, right: 0, display: "flex", flexWrap: "wrap", justifyContent: "center", alignItems: "center", gap: 8, zIndex: 60, padding: "0 12px" } },
