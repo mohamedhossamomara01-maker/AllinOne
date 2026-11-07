@@ -544,19 +544,6 @@ async function rcptShrink(file) {
   c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
   return c.toDataURL("image/jpeg", 0.82).split(",")[1];
 }
-// نداء الذكاء الاصطناعي عن طريق Supabase Edge Function (ai-proxy) — المفتاح على السيرفر ومحدش محتاج يعمل مفتاح
-async function aiCall({ kind, prompt, image_b64, schema, example }) {
-  const { data, error } = await sb.functions.invoke("ai-proxy", { body: { kind, prompt, image_b64, schema, example } });
-  if (error) {
-    let st = 0; try { st = (error.context && error.context.status) || 0; } catch (e) {}
-    if (error.name === "FunctionsFetchError") throw new Error("net");
-    if (st === 429) { let d = {}; try { d = await error.context.json(); } catch (e) {} throw new Error(d.error === "busy" ? "busy" : "quota"); }
-    if (st === 401) throw new Error("auth");
-    if (st === 404) throw new Error("nofn");
-    throw new Error("fail " + st);
-  }
-  return data && data.text;
-}
 async function rcptRead(b64) {
   const catList = RCPT_CATS.map(c => c[1]).concat(EXP_CATS.filter(c => c[1] !== "أكل وسوبر ماركت").map(c => c[1]));
   const prompt = "دي صورة فاتورة شراء (غالبًا من محل في مصر وبالعربي). استخرج منها JSON بالشكل المطلوب.\n" +
@@ -565,9 +552,12 @@ async function rcptRead(b64) {
     "التصنيف لازم يكون واحد من القايمة دي بالظبط لو مناسب: " + catList.join("، ") + ". لو مفيش مناسب اعمل تصنيف عربي قصير (كلمتين بالكتير).\n" +
     "أمثلة: لحمة مفرومة أو فراخ → لحوم وفراخ، توابل أو إندومي أو مكرونة أو أرز أو سكر أو زيت أكل → عطارة، شامبو أو زيت شعر أو صابون أو مسحوق غسيل → منظفات.\n" +
     "ماتعتبرش الإجمالي أو المدفوع أو الباقي أو الخصم بند. رسوم التوصيل أو الخدمة أو الضريبة تتحط بند تصنيفه أخرى. اكتب الأسماء بالعربي زي الفاتورة. سطر مش مقروء تجاهله. رجّع JSON بس.";
-  const schema = { type: "OBJECT", properties: { store: { type: "STRING" }, date: { type: "STRING" }, total: { type: "NUMBER" }, items: { type: "ARRAY", items: { type: "OBJECT", properties: { name: { type: "STRING" }, amount: { type: "NUMBER" }, cat: { type: "STRING" } }, required: ["name", "amount", "cat"] } } }, required: ["items"] };
-  const txt = await aiCall({ kind: "receipt", prompt, image_b64: b64, schema, example: '{"store":"اسم المحل","date":"YYYY-MM-DD","total":0,"items":[{"name":"2 ك لحمة مفرومة","amount":0,"cat":"لحوم وفراخ"}]}' });
-  try { return JSON.parse(String(txt || "").replace(/```json|```/g, "").trim()); } catch (e) { throw new Error("parse"); }
+  const full = prompt + "\nرجّع JSON فقط من غير أي شرح ولا علامات كود، بالشكل ده: " + '{"store":"اسم المحل","date":"YYYY-MM-DD","total":0,"items":[{"name":"2 ك لحمة مفرومة","amount":0,"cat":"لحوم وفراخ"}]}';
+  const bin = atob(b64), u8 = new Uint8Array(bin.length); for (let k = 0; k < bin.length; k++) u8[k] = bin.charCodeAt(k);
+  const blob = new Blob([u8], { type: "image/jpeg" });
+  const txt = await Promise.race([askAI(full, blob), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 60000))]);
+  const mm = /\{[\s\S]*\}/.exec(String(txt || "")); if (!mm) throw new Error("parse");
+  try { return JSON.parse(mm[0]); } catch (e) { throw new Error("parse"); }
 }
 function ReceiptScan({ docKey, icons, onSaved }) {
   const { set } = useData();
@@ -590,13 +580,10 @@ function ReceiptScan({ docKey, icons, onSaved }) {
       setDraft({ store, date, total: num(out.total) || 0, items });
     } catch (ex) {
       const m = String(ex && ex.message || "");
-      if (m === "auth") setErr("سجّل دخول الأول وبعدين جرّب تاني.");
-      else if (m === "nofn") setErr("خدمة قراءة الفواتير لسه مش متفعّلة على السيرفر.");
-      else if (m === "quota") setErr("وصلت للحد اليومي من قراءة الفواتير. جرّب بكرة بإذن الله.");
-      else if (m === "busy") setErr("الخدمة مزدحمة دلوقتي، جرّب بعد شوية.");
-      else if (m === "net") setErr("اتأكد من النت وجرّب تاني.");
-      else if (m === "empty") setErr("ماقدرتش أقرا بنود من الصورة. صوّرها أوضح وفي إضاءة كويسة.");
-      else setErr("حصلت مشكلة في قراءة الفاتورة. جرّب تاني.");
+      if (m === "timeout") setErr("الطلب أخد وقت طويل، جرّب تاني بصورة أصغر أو نت أحسن.");
+      else if (m === "empty" || m === "parse") setErr("ماقدرتش أقرا بنود من الصورة. صوّرها أوضح وفي إضاءة كويسة.");
+      else if (/Failed to fetch|NetworkError|Load failed/i.test(m)) setErr("اتأكد من النت وجرّب تاني.");
+      else setErr(m ? m.slice(0, 120) : "حصلت مشكلة في قراءة الفاتورة. جرّب تاني.");
     }
     setBusy(false);
   };
