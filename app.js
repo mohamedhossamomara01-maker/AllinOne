@@ -360,7 +360,10 @@ const catIcon = (cat, type, ic) => ic || ((type === "inc" ? INC_CATS : EXP_CATS)
 
 const carInst = mk => { const y = +mk.slice(0, 4); return y <= 2026 ? 7000 : Math.min(10000, 7000 + (y - 2026) * 1000); };
 const aptInst = mk => { const [y, mo] = mk.split("-").map(Number); const idx = y * 12 + mo, ref = 2026 * 12 + 11; const inc = idx < ref ? 0 : Math.floor((idx - ref) / 12) + 1; let v = 1030; for (let i = 0; i < inc; i++) v = Math.round(v * 1.07); return v; };
-const loanInst = (l, mk) => l.sched === "car" ? carInst(mk) : l.sched === "apt" ? aptInst(mk) : (Number(l.amount) || 0);
+// زيادة سنوية اختيارية على القسط: نسبة % أو مبلغ ثابت، في شهر معيّن كل سنة، وبحد أقصى اختياري
+const stepInst = (l, mk) => { const st = l.step || {}; const base = Number(l.amount) || 0; const [y0, m0] = String(l.asOf).split("-").map(Number), [y1, m1] = mk.split("-").map(Number); const d = (y1 * 12 + m1) - (y0 * 12 + m0); const sm = Number(st.month) || 1; const o = ((sm - m0 + 12) % 12) || 12; const n = d >= o ? Math.floor((d - o) / 12) + 1 : 0; let v = base; for (let i = 0; i < n; i++) { v = st.type === "pct" ? Math.round(v * (1 + (Number(st.val) || 0) / 100)) : v + (Number(st.val) || 0); if (st.cap > 0 && v > st.cap) v = st.cap; } return v; };
+const stepLabel = l => { const st = l.step || {}; return (st.type === "pct" ? "+" + st.val + "%" : "+" + fmt(st.val, 0)) + " كل " + MONTHS_AR[(Number(st.month) || 1) - 1] + (st.cap > 0 ? " (لحد " + fmt(st.cap, 0) + ")" : ""); };
+const loanInst = (l, mk) => l.sched === "car" ? carInst(mk) : l.sched === "apt" ? aptInst(mk) : l.sched === "step" ? stepInst(l, mk) : (Number(l.amount) || 0);
 const loanRemAt = (l, upTo) => { let rem = Number(l.remaining0) || 0, mk = l.asOf, n = 0; while (mk < upTo && rem > 0 && n++ < 700) { mk = addMonths(mk, 1); rem -= Math.min(rem, loanInst(l, mk)); } return Math.max(0, Math.round(rem * 100) / 100); };
 const loanEnd = l => { let rem = Number(l.remaining0) || 0, mk = l.asOf, n = 0; if (!(loanInst(l, addMonths(mk, 1)) > 0)) return null; while (rem > 0 && n++ < 700) { mk = addMonths(mk, 1); rem -= loanInst(l, mk); } return rem <= 0 ? mk : null; };
 const payDate = m => START_DAY > 1 ? addMonths(m, -1) + "-" + pad(START_DAY) : m + "-01";
@@ -370,13 +373,14 @@ function LoansTab() {
   const items = (get("loans", { items: [] }).items) || [];
   const cur = monthOf(todayStr());
   const [sheet, setSheet] = useState(false);
-  const [f, setF] = useState({ name: "", original: "", remaining: "", amount: "" });
+  const [f, setF] = useState({ name: "", original: "", remaining: "", amount: "", stepType: "none", stepVal: "", stepMonth: "1", cap: "" });
   const upd = fn => set("loans", d => ({ ...(d || {}), items: fn((d && d.items) || []) }));
   const add = () => {
     const o = num(f.original), r = num(f.remaining), a = num(f.amount);
     if (!f.name.trim() || !(a > 0) || !(r >= 0)) return alert("اكتب الاسم والمتبقي والقسط الشهري.");
-    upd(l => [...l, { id: uid8(), name: f.name.trim(), cat: f.name.trim(), icon: "💳", original: o > 0 ? o : r, remaining0: r, asOf: cur, sched: "fixed", amount: a }]);
-    setSheet(false); setF({ name: "", original: "", remaining: "", amount: "" });
+    const sv = num(f.stepVal); if (f.stepType !== "none" && !(sv > 0)) return alert("اكتب قيمة الزيادة السنوية (أو اختار من غير زيادة).");
+    upd(l => [...l, { id: uid8(), name: f.name.trim(), cat: f.name.trim(), icon: "💳", original: o > 0 ? o : r, remaining0: r, asOf: cur, sched: f.stepType !== "none" ? "step" : "fixed", amount: a, ...(f.stepType !== "none" ? { step: { type: f.stepType, val: sv, month: Number(f.stepMonth) || 1, cap: num(f.cap) > 0 ? num(f.cap) : 0 } } : {}) }]);
+    setSheet(false); setF({ name: "", original: "", remaining: "", amount: "", stepType: "none", stepVal: "", stepMonth: "1", cap: "" });
   };
   const rows = items.map(l => ({ l, rem: loanRemAt(l, cur), inst: loanInst(l, cur), end: loanEnd(l) }));
   const totRem = rows.reduce((t, r) => t + r.rem, 0);
@@ -389,7 +393,7 @@ function LoansTab() {
     rows.length === 0 && h(Empty, { icon: "🏦", text: "مفيش قروض أو أقساط لسه.\nضيف قسط وهيتخصم تلقائي من المرتب كل شهر." }),
     rows.map(({ l, rem, inst, end }) => { const paid = Math.max(0, (Number(l.original) || 0) - rem), pct = l.original ? paid / l.original * 100 : 0; return h("div", { key: l.id, className: "card", style: { marginBottom: 10 } },
       h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
-        h("div", null, h("div", { style: { fontWeight: 900 } }, (l.icon || "💳") + " " + l.name), h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 2 } }, l.sched === "car" ? "7,000 → +1,000 كل يناير لحد 10,000" : l.sched === "apt" ? "+7% كل نوفمبر (بيتقرّب لأقرب جنيه)" : "قسط ثابت شهريًا")),
+        h("div", null, h("div", { style: { fontWeight: 900 } }, (l.icon || "💳") + " " + l.name), h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 2 } }, l.sched === "car" ? "7,000 → +1,000 كل يناير لحد 10,000" : l.sched === "apt" ? "+7% كل نوفمبر (بيتقرّب لأقرب جنيه)" : l.sched === "step" ? stepLabel(l) : "قسط ثابت شهريًا")),
         h("div", { style: { textAlign: "left" } }, h("div", { style: { fontSize: 11, color: "var(--muted)" } }, "تم السداد"), h("div", { style: { fontWeight: 900, color: "var(--ok)" } }, fmt(paid, 0)))),
       h(Bar, { pct }),
       h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, textAlign: "center", marginTop: 10 } },
@@ -402,6 +406,10 @@ function LoansTab() {
       h(Field, { label: "المبلغ الأصلي" }, h("input", { type: "number", inputMode: "decimal", value: f.original, onChange: e => setF({ ...f, original: e.target.value }) })),
       h(Field, { label: "المتبقي حاليًا" }, h("input", { type: "number", inputMode: "decimal", value: f.remaining, onChange: e => setF({ ...f, remaining: e.target.value }) })),
       h(Field, { label: "القسط الشهري" }, h("input", { type: "number", inputMode: "decimal", value: f.amount, onChange: e => setF({ ...f, amount: e.target.value }) })),
+      h(Field, { label: "زيادة سنوية على القسط (لو محتاجها)" }, h("select", { value: f.stepType, onChange: e => setF({ ...f, stepType: e.target.value }) }, h("option", { value: "none" }, "من غير زيادة"), h("option", { value: "pct" }, "نسبة % كل سنة (زي 7%)"), h("option", { value: "amt" }, "مبلغ ثابت كل سنة (زي +1000)"))),
+      f.stepType !== "none" && h(Field, { label: f.stepType === "pct" ? "نسبة الزيادة %" : "مبلغ الزيادة كل سنة" }, h("input", { type: "number", inputMode: "decimal", value: f.stepVal, onChange: e => setF({ ...f, stepVal: e.target.value }) })),
+      f.stepType !== "none" && h(Field, { label: "الزيادة بتحصل في شهر" }, h("select", { value: f.stepMonth, onChange: e => setF({ ...f, stepMonth: e.target.value }) }, MONTHS_AR.map((n, i) => h("option", { key: i, value: String(i + 1) }, n)))),
+      f.stepType !== "none" && h(Field, { label: "أقصى قسط (اختياري)" }, h("input", { type: "number", inputMode: "decimal", value: f.cap, onChange: e => setF({ ...f, cap: e.target.value }) })),
       h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: add }, "إضافة")));
 }
 
@@ -671,6 +679,13 @@ function ExpensesModule({ docKey, who, ride }) {
   const del = id => { if (String(id).startsWith("auto_")) return toast("دي عملية تلقائية، بتتعدّل من مصدرها."); if (confirmDo("تمسح العملية دي؟")) { const it = items.find(i => i.id === id) || {}; set(docKey, d => ({ ...d, items: d.items.filter(i => i.id !== id) })); if (main && it.ext === "fam") set("family", d => ({ ...(d || {}), items: ((d && d.items) || []).filter(i => i.link !== id) })); if (main && it.ext === "tahwish") set("savings", d => ({ ...(d || {}), log: (((d || {}).log) || []).filter(x => x.src !== id) })); } };
   const saveBudget = () => { const b = num(bud); set(docKey, d => ({ ...(d || { items: [] }), budget: b > 0 ? b : 0 })); setSheet(null); };
   const left = inc - exp;
+  const cbs = doc.catBudgets || {};
+  const [cbCat, setCbCat] = useState(""); const [cbVal, setCbVal] = useState("");
+  const spentBy = useMemo(() => { const o = {}; byCat.forEach(([c, v]) => { o[c] = v; }); return o; }, [byCat]);
+  const cbNames = useMemo(() => { const o = []; const ad = n => { if (n && !o.includes(n)) o.push(n); }; EXP_CATS.forEach(c => ad(c[1])); RCPT_CATS.forEach(c => ad(c[1])); items.forEach(i => { if (i.type !== "inc") ad(i.cat); }); Object.keys(cbs).forEach(ad); return o.slice(0, 80); }, [items, doc.catBudgets]);
+  const openCb = c => { setCbCat(c || ""); setCbVal(c && cbs[c] ? String(cbs[c]) : ""); setSheet("cbud"); };
+  const saveCb = () => { const v = num(cbVal), c = String(cbCat).trim(); if (!c) return toast("اختار القسم الأول."); if (!(v > 0)) return toast("اكتب الحد الشهري."); set(docKey, d => ({ ...(d || { items: [], budget: 0 }), catBudgets: { ...((d && d.catBudgets) || {}), [c]: v } })); setSheet(null); toast("اتحفظت ✓"); };
+  const delCb = c => { set(docKey, d => { const nb = { ...((d && d.catBudgets) || {}) }; delete nb[c]; return { ...(d || {}), catBudgets: nb }; }); setSheet(null); };
   const tabsBar = main && h("div", { style: { display: "flex", gap: 8, marginBottom: 12 } }, [["exp", "💳 المصروفات"], ["loans", "🏦 القروض"], ["sav", "💰 التحويش"]].map(([k, l]) => h("button", { key: k, className: "chip" + (tab === k ? " on" : ""), style: { flex: 1, padding: 9 }, onClick: () => setTab(k) }, l)));
   if (main && tab === "loans") return h("div", { className: "fade" }, tabsBar, h(LoansTab));
   if (main && tab === "sav") return h("div", { className: "fade" }, tabsBar, h(SavingsTab, { docKey: "savings" }));
@@ -689,6 +704,16 @@ function ExpensesModule({ docKey, who, ride }) {
             h("div", { style: { fontSize: 12, color: "var(--muted)", marginTop: 8 } }, exp > budget ? "تعدّيت الميزانية بـ " + fmt(exp - budget, 0) : "فاضل " + fmt(budget - exp, 0) + " من الميزانية"))
         : h("div", { style: { fontSize: 13, color: "var(--muted)" } }, "لسه ماحدّدتش ميزانية للشهر."),
       h("button", { className: "btn btn-ghost", style: { width: "100%", marginTop: 10, padding: "9px" }, onClick: () => { setBud(budget ? String(budget) : ""); setSheet("budget"); } }, budget ? "تعديل الميزانية" : "حدّد ميزانية")),
+    h("div", { className: "card", style: { marginBottom: 10 } },
+      h("div", { style: { fontWeight: 900, fontSize: 14, marginBottom: 10 } }, "🎯 ميزانيات الأقسام"),
+      Object.keys(cbs).length === 0
+        ? h("div", { style: { fontSize: 13, color: "var(--muted)", marginBottom: 8 } }, "حدّد حد شهري لكل قسم (أكل، بيت، أقساط، ترفيه…) وتابع المتبقي منه.")
+        : Object.entries(cbs).map(([c, lim]) => { const sp = spentBy[c] || 0, pct = lim > 0 ? sp / lim * 100 : 0; const st = pct > 100 ? ["عدّيت الحد", "var(--danger)"] : pct >= 80 ? ["قربت من الحد", "var(--warn)"] : ["أقل من الحد", "var(--ok)"]; const ic = icons[c] || (RCPT_CATS.find(x => x[1] === c) || [])[0] || catIcon(c, "exp");
+          return h("div", { key: c, onClick: () => openCb(c), style: { marginBottom: 12, cursor: "pointer" } },
+            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 } }, h("span", { style: { fontWeight: 800, fontSize: 13 } }, ic + " " + c), h("span", { style: { fontSize: 11, fontWeight: 800, padding: "2px 9px", borderRadius: 99, border: "1px solid " + st[1], color: st[1] } }, st[0])),
+            h(Bar, { pct, color: pct > 100 ? "var(--danger)" : pct >= 80 ? "var(--warn)" : null }),
+            h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 5 } }, h("span", null, sp > lim ? "زيادة " + fmt(sp - lim, 0) : "المتبقي " + fmt(lim - sp, 0)), h("span", null, fmt(sp, 0) + " من " + fmt(lim, 0)))); }),
+      h("button", { className: "btn btn-ghost", style: { width: "100%", marginTop: 2, padding: "9px" }, onClick: () => openCb("") }, "+ حدّد ميزانية قسم")),
     h("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
       h("button", { className: "btn btn-primary", style: { flex: 1 }, onClick: () => openAdd("exp") }, "− مصروف"),
       h("button", { className: "btn btn-ghost", style: { flex: 1 }, onClick: () => openAdd("inc") }, "+ دخل")),
@@ -729,6 +754,12 @@ function ExpensesModule({ docKey, who, ride }) {
       h(Field, { label: "ملاحظة (اختياري)" }, h("input", { value: note, onChange: e => setNote(e.target.value), maxLength: 80 })),
       h(Field, { label: "التاريخ" }, h("input", { type: "date", value: date, onChange: e => setDate(e.target.value), max: "2100-01-01" })),
       h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: save }, "حفظ")),
+    sheet === "cbud" && h(Sheet, { title: "ميزانية قسم", onClose: () => setSheet(null) },
+      h(Field, { label: "القسم" }, h("select", { value: cbCat, onChange: e => { const c = e.target.value; setCbCat(c); setCbVal(cbs[c] ? String(cbs[c]) : cbVal); } }, [h("option", { key: "_", value: "" }, "اختار القسم…")].concat((cbNames.includes(cbCat) || !cbCat ? cbNames : cbNames.concat([cbCat])).map(n => h("option", { key: n, value: n }, n))))),
+      h("button", { className: "btn btn-ghost", style: { width: "100%", marginBottom: 10, padding: "8px" }, onClick: () => { const n = (window.prompt("اسم القسم الجديد؟") || "").trim().slice(0, 30); if (n) setCbCat(n); } }, "+ قسم جديد"),
+      h(Field, { label: "الحد الشهري للقسم" }, h("input", { type: "number", inputMode: "decimal", value: cbVal, onChange: e => setCbVal(e.target.value) })),
+      h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: saveCb }, "حفظ"),
+      cbs[cbCat] && h("button", { className: "btn btn-danger", style: { width: "100%", marginTop: 8 }, onClick: () => delCb(cbCat) }, "🗑 مسح ميزانية القسم")),
     sheet === "budget" && h(Sheet, { title: "ميزانية الشهر", onClose: () => setSheet(null) },
       h(Field, { label: "الحد الأقصى للمصروف شهريًا", hint: "هتشوف شريط تقدّم وتنبيه لما تقرّب منها." }, h("input", { type: "number", inputMode: "decimal", value: bud, onChange: e => setBud(e.target.value), autoFocus: true })),
       h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: saveBudget }, "حفظ")),
