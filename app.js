@@ -1596,7 +1596,23 @@ function FeedbackScreen({ user, back }) {
     h("button", { className: "btn btn-ghost", onClick: back, style: { width: "100%" } }, "رجوع"));
 }
 // ── الثيم: تلقائي (ليل 6م → 6ص دارك) أو يدوي، وزرار الهلال بيعمل تغيير مؤقت لحد ما يجي ميعاد التبديل الجاي ──
-const autoThemeNow = () => { const hr = new Date().getHours(); return (hr >= 18 || hr < 6) ? "dark" : "light"; };
+// الليل = من المغرب لحد الشروق حسب مواقيت الصلاة (من موقعك المحفوظ)، ولو مفيش مواقيت بيستخدم 6م → 6ص
+const themeTimes = () => lsGet("allinone:themeTimes", null);
+const tmin = x => { const m = /(\d{1,2}):(\d{2})/.exec(String(x || "")); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+const nightWin = () => { const t = themeTimes(); const sr = t && tmin(t.Sunrise), mg = t && tmin(t.Maghrib); return { sr: sr != null ? sr : 360, mg: mg != null ? mg : 1080 }; };
+const autoThemeNow = () => { const d = new Date(), n = d.getHours() * 60 + d.getMinutes(), w = nightWin(); return (n >= w.mg || n < w.sr) ? "dark" : "light"; };
+async function refreshThemeTimes() {
+  try {
+    const c = themeTimes(); if (c && c.date === todayStr()) return false;
+    let co = null;
+    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.endsWith(":last_known_location")) { try { const v = JSON.parse(localStorage.getItem(k)); if (v && v.lat != null && v.lon != null) { co = v; break; } } catch (e) {} } }
+    if (!co) return false;
+    const d = new Date(), ds = String(d.getDate()).padStart(2, "0") + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + d.getFullYear();
+    const r = await fetch("https://api.aladhan.com/v1/timings/" + ds + "?latitude=" + co.lat + "&longitude=" + co.lon + "&method=5"); const j = await r.json();
+    const tm = j && j.data && j.data.timings; if (!tm) return false;
+    lsSet("allinone:themeTimes", { date: todayStr(), Sunrise: tm.Sunrise, Maghrib: tm.Maghrib }); return true;
+  } catch (e) { return false; }
+}
 const themeMode = () => lsGet("allinone:themeMode", lsGet("allinone:theme", "light") === "dark" ? "dark" : "auto");
 function themeNow() { const m = themeMode(); if (m !== "auto") return m; const ov = lsGet("allinone:themeOv", null); if (ov && Date.now() < ov.until) return ov.t; return autoThemeNow(); }
 function SettingsScreen({ prof, setProf, theme, setTheme, onLogout }) {
@@ -1668,10 +1684,10 @@ function Shell({ user }) {
   const theme = themeNow();
   const toggleTheme = () => {
     const nx = theme === "dark" ? "light" : "dark";
-    if (mode === "auto") { const d = new Date(), b = new Date(d); if (autoThemeNow() === "dark") { if (d.getHours() >= 18) b.setDate(b.getDate() + 1); b.setHours(6, 0, 0, 0); } else b.setHours(18, 0, 0, 0); lsSet("allinone:themeOv", { t: nx, until: b.getTime() }); setTick(x => x + 1); }
+    if (mode === "auto") { const w = nightWin(), d = new Date(), b = new Date(d), n = d.getHours() * 60 + d.getMinutes(); if (autoThemeNow() === "dark") { if (n >= w.mg) b.setDate(b.getDate() + 1); b.setHours(Math.floor(w.sr / 60), w.sr % 60, 0, 0); } else b.setHours(Math.floor(w.mg / 60), w.mg % 60, 0, 0); lsSet("allinone:themeOv", { t: nx, until: b.getTime() }); setTick(x => x + 1); }
     else setTheme(nx);
   };
-  useEffect(() => { const i = setInterval(() => setTick(x => x + 1), 60000), v = () => setTick(x => x + 1); document.addEventListener("visibilitychange", v); return () => { clearInterval(i); document.removeEventListener("visibilitychange", v); }; }, []);
+  useEffect(() => { const rf = () => { refreshThemeTimes().then(ok => { if (ok) setTick(x => x + 1); }); }; rf(); const i = setInterval(() => { rf(); setTick(x => x + 1); }, 60000), v = () => { rf(); setTick(x => x + 1); }; document.addEventListener("visibilitychange", v); return () => { clearInterval(i); document.removeEventListener("visibilitychange", v); }; }, []);
   useEffect(() => { document.documentElement.setAttribute("data-theme", theme); const m = document.querySelector('meta[name="theme-color"]'); if (m) m.content = theme === "dark" ? "#0d2326" : "#fef7e5"; }, [theme]);
   const [screen, setScreen] = useState(history.state && history.state.s || "home");
   useEffect(() => { const p = e => setScreen((e.state && e.state.s) || "home"); window.addEventListener("popstate", p); if (screen !== "home") { history.replaceState({ s: "home" }, ""); history.pushState({ s: screen }, ""); } else history.replaceState({ s: "home" }, ""); return () => window.removeEventListener("popstate", p); }, []);
