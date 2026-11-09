@@ -1576,6 +1576,16 @@ function nativeSync() {
   _nativeP = nativeSyncRun().then(m => { _nativeLast = m; return m; }, e => "خطأ: " + (e && e.message ? e.message : e)).finally(() => { _nativeP = null; });
   return _nativeP;
 }
+// إضافة ويدجت المواقيت للشاشة الرئيسية (أندرويد 8+): بيطلع للمستخدم رسالة من النظام يوافق عليها
+async function nativePinWidget(manual) {
+  try {
+    const C = window.Capacitor; const P = C && C.isNativePlatform && C.isNativePlatform() && C.Plugins && C.Plugins.WidgetPin;
+    if (!P) return manual ? "الويدجت متاحة في نسخة الموبايل (APK) بس." : "";
+    const r = await P.pin();
+    if (r && r.exists) return manual ? "الويدجت مضافة فعلًا على شاشتك الرئيسية ✅" : "";
+    return r && r.ok ? "اتطلب من النظام يضيف الويدجت — دوس «إضافة» في الرسالة اللي ظهرت." : (manual ? "موبايلك مش بيدعم الإضافة التلقائية. اضغط مطوّلًا على الشاشة الرئيسية ← الأدوات (Widgets) ← AllinOne." : "");
+  } catch (e) { return manual ? "معرفتش أضيف الويدجت تلقائي. اضغط مطوّلًا على الشاشة الرئيسية ← الأدوات ← AllinOne." : ""; }
+}
 async function nativeSyncRun() {
   const LN = nativeLN();
   try {
@@ -1631,6 +1641,7 @@ async function nativeSyncRun() {
     }
     (ld("quran_custom_reminders", []) || []).forEach((r, i) => { if (!r.on || !r.time) return; const [h, m] = String(r.time).split(":").map(Number); if (isNaN(h)) return; list.push({ id: 9000 + i, title: "📖 تذكير: " + r.title, body: "حان وقت: " + r.title, schedule: { on: { hour: h, minute: m }, allowWhileIdle: true }, channelId: "reminders", largeIcon: "ic_large", extra: { go: resolveReminderTarget(r) } }); });
     if (list.length) await LN.schedule({ notifications: list });
+    try { if (!ld("widget_pin_asked", false)) { svLocal("widget_pin_asked", true); setTimeout(() => nativePinWidget(false), 1500); } } catch (e) {}
     return (_nativeExact && _nativeExact !== "granted" ? "⚠️ المنبّهات الدقيقة مش مسموحة — التنبيهات ممكن تتأخر. دوس زرار «السماح بالمنبّهات الدقيقة» تحت.\n" : "") + "✅ التنبيهات والأذان متسجّلين على الموبايل نفسه (" + list.length + " تنبيه للـ10 أيام الجاية)" + approx;
   } catch (e) { return "معرفتش أجدول التنبيهات: " + (e && e.message ? e.message : e); }
 }
@@ -1710,7 +1721,8 @@ function QuranRemindersPanel() {
       E("div", { style: { fontSize: 13, fontWeight: 800, marginBottom: 6 } }, "⚙️ عشان التنبيهات تيجي في ميعادها بالظبط"),
       E("div", { style: { fontSize: 11, color: "var(--muted)", lineHeight: 1.9, marginBottom: 8 } }, "1) اسمح بالمنبّهات الدقيقة (الزرار تحت).\n2) إعدادات الموبايل ← التطبيقات ← AllinOne ← توفير البطارية ← «بدون قيود».\n3) فعّل «التشغيل التلقائي» (Autostart) للتطبيق، وثبّته في شاشة التطبيقات الأخيرة (قفل).".split("\n").map((t, i) => E("div", { key: i }, t))),
       E("button", { onClick: async () => { await nativeExactOpen(); }, style: { ...S.btn ? S.btn() : {}, width: "100%", padding: "10px", borderRadius: 10, border: "1px solid " + T.bdr, background: "transparent", color: "var(--text)", fontWeight: 800, cursor: "pointer", fontFamily: "inherit" } }, "⏰ السماح بالمنبّهات الدقيقة"),
-      E("button", { onClick: async () => { setSyncMsg(await nativeTestAdhan()); }, style: { width: "100%", padding: "10px", borderRadius: 10, border: "1px solid " + T.bdr, background: "transparent", color: "var(--text)", fontWeight: 800, cursor: "pointer", fontFamily: "inherit", marginTop: 8 } }, "🔔 جرّب إشعار الأذان دلوقتي")),
+      E("button", { onClick: async () => { setSyncMsg(await nativeTestAdhan()); }, style: { width: "100%", padding: "10px", borderRadius: 10, border: "1px solid " + T.bdr, background: "transparent", color: "var(--text)", fontWeight: 800, cursor: "pointer", fontFamily: "inherit", marginTop: 8 } }, "🔔 جرّب إشعار الأذان دلوقتي"),
+      E("button", { onClick: async () => { setSyncMsg(await nativePinWidget(true)); }, style: { width: "100%", padding: "10px", borderRadius: 10, border: "1px solid " + T.bdr, background: "transparent", color: "var(--text)", fontWeight: 800, cursor: "pointer", fontFamily: "inherit", marginTop: 8 } }, "📲 أضف ويدجت المواقيت للشاشة الرئيسية")),
     notifOk && Notification.permission === "denied" && E("div", { style: { fontSize: 12, color: "var(--danger)", marginBottom: 12, lineHeight: 1.8 } }, "الإشعارات متقفلة من إعدادات المتصفح. افتحها من إعدادات الموقع وجرّب تاني."),
     E("div", { style: { ...S.card(), marginBottom: 14 } },
       E("div", { style: { fontSize: 12, color: "var(--muted)", marginBottom: 8, fontWeight: 700 } }, "ضيف تذكير جديد (بيوصل حتى لو التطبيق مقفول)"),
