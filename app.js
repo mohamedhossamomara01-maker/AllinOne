@@ -1595,6 +1595,10 @@ function FeedbackScreen({ user, back }) {
     h("button", { className: "btn btn-primary", onClick: send, disabled: busy, style: { width: "100%", padding: 14, fontSize: 16, fontWeight: 900, marginBottom: 8 } }, busy ? "بيتبعت…" : "ابعت"),
     h("button", { className: "btn btn-ghost", onClick: back, style: { width: "100%" } }, "رجوع"));
 }
+// ── الثيم: تلقائي (ليل 6م → 6ص دارك) أو يدوي، وزرار الهلال بيعمل تغيير مؤقت لحد ما يجي ميعاد التبديل الجاي ──
+const autoThemeNow = () => { const hr = new Date().getHours(); return (hr >= 18 || hr < 6) ? "dark" : "light"; };
+const themeMode = () => lsGet("allinone:themeMode", lsGet("allinone:theme", "light") === "dark" ? "dark" : "auto");
+function themeNow() { const m = themeMode(); if (m !== "auto") return m; const ov = lsGet("allinone:themeOv", null); if (ov && Date.now() < ov.until) return ov.t; return autoThemeNow(); }
 function SettingsScreen({ prof, setProf, theme, setTheme, onLogout }) {
   const { user, wipe } = useData();
   const [toast, toastNode] = useToast();
@@ -1639,7 +1643,7 @@ function SettingsScreen({ prof, setProf, theme, setTheme, onLogout }) {
       h("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } }, modsFor(prof).map(m => h("button", { key: m.id, className: "chip" + ((m.id === "daily" ? !prof.hideDaily : m.id === "fit" ? !prof.hideFit : mods.includes(m.id)) ? " on" : ""), onClick: () => toggle(m.id) }, m.icon + " " + modTitle(m.id, prof))),
         h("div", { style: { fontSize: 11, color: "var(--muted)", width: "100%" } }, "إخفاء قسم مابيمسحش بياناته."))),
     grp("theme", "🎨 المظهر",
-      h("div", { style: { display: "flex", gap: 8 } }, [["dark", "🌙 داكن"], ["light", "☀️ فاتح"]].map(([k, l]) => h("button", { key: k, className: "chip" + (theme === k ? " on" : ""), onClick: () => setTheme(k) }, l)))),
+      h("div", { style: { display: "flex", gap: 8 } }, [["auto", "🌗 تلقائي"], ["dark", "🌙 داكن"], ["light", "☀️ فاتح"]].map(([k, l]) => h("button", { key: k, className: "chip" + (theme === k ? " on" : ""), onClick: () => setTheme(k) }, l)))),
     grp("backup", "☁️ نسخك الاحتياطية", h("div", { id: "backup-panel" }, h(BackupPanel, {}))),
     grp("apk", "📲 تنزيل نسخة أندرويد", h(ApkCard, {})),
     h("div", { style: { textAlign: "center", fontSize: 11, color: "var(--muted)", margin: "14px 0 4px" } }, "نسخة التطبيق: " + APP_VERSION),
@@ -1658,8 +1662,16 @@ function Shell({ user }) {
   const prof = get("profile", {});
   START_DAY = clamp(parseInt(prof.monthStartDay) || 1, 1, 28);
   const setProf = p => set("profile", p);
-  const [theme, setThemeS] = useState(lsGet("allinone:theme", "light"));
-  const setTheme = t => { setThemeS(t); lsSet("allinone:theme", t); };
+  const [mode, setModeS] = useState(themeMode());
+  const [, setTick] = useState(0);
+  const setTheme = t => { lsSet("allinone:themeMode", t); lsSet("allinone:themeOv", null); setModeS(t); };
+  const theme = themeNow();
+  const toggleTheme = () => {
+    const nx = theme === "dark" ? "light" : "dark";
+    if (mode === "auto") { const d = new Date(), b = new Date(d); if (autoThemeNow() === "dark") { if (d.getHours() >= 18) b.setDate(b.getDate() + 1); b.setHours(6, 0, 0, 0); } else b.setHours(18, 0, 0, 0); lsSet("allinone:themeOv", { t: nx, until: b.getTime() }); setTick(x => x + 1); }
+    else setTheme(nx);
+  };
+  useEffect(() => { const i = setInterval(() => setTick(x => x + 1), 60000), v = () => setTick(x => x + 1); document.addEventListener("visibilitychange", v); return () => { clearInterval(i); document.removeEventListener("visibilitychange", v); }; }, []);
   useEffect(() => { document.documentElement.setAttribute("data-theme", theme); const m = document.querySelector('meta[name="theme-color"]'); if (m) m.content = theme === "dark" ? "#0d2326" : "#fef7e5"; }, [theme]);
   const [screen, setScreen] = useState(history.state && history.state.s || "home");
   useEffect(() => { const p = e => setScreen((e.state && e.state.s) || "home"); window.addEventListener("popstate", p); if (screen !== "home") { history.replaceState({ s: "home" }, ""); history.pushState({ s: screen }, ""); } else history.replaceState({ s: "home" }, ""); return () => window.removeEventListener("popstate", p); }, []);
@@ -1739,7 +1751,7 @@ function Shell({ user }) {
       })),
       SOON.length > 0 && h("div", { style: { marginTop: 18, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", color: "var(--muted)", fontSize: 12 } }, h("span", null, "قريبًا:"), SOON.map(s => h("span", { key: s.title, className: "chip", style: { opacity: .6, cursor: "default" } }, s.icon + " " + s.title))));
   } else if (cur === "feedback") body = h(FeedbackScreen, { user, back });
-  else if (cur === "settings") body = h(SettingsScreen, { prof, setProf, theme, setTheme, onLogout: async () => { await flush(); await sb.auth.signOut(); } });
+  else if (cur === "settings") body = h(SettingsScreen, { prof, setProf, theme: mode, setTheme, onLogout: async () => { await flush(); await sb.auth.signOut(); } });
   else if (cur === "expenses") body = h(ExpensesModule, { docKey: "expenses", who: "", ride: !!prof.ride });
   else if (cur === "family") body = h(FamilyModule, { prof });
   else if (cur === "period") body = h(PeriodTracker, { docKey: "period" });
@@ -1762,6 +1774,7 @@ function Shell({ user }) {
       cur === "home" && h("div", { style: { position: "relative" } },
         h("button", { className: "btn btn-ghost", onClick: () => go("feedback"), "aria-label": "ابعت اقتراحك أو مشكلتك", style: { padding: "6px 13px" } }, "✉️"),
         h("span", { onClick: () => go("feedback"), style: { position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", marginTop: 3, fontSize: 9, color: "var(--muted)", lineHeight: 1.25, textAlign: "center", width: 74, cursor: "pointer" } }, "ابعت اقتراحك أو مشكلتك")),
+      cur === "athkar" && h("button", { className: "btn btn-ghost", onClick: toggleTheme, "aria-label": "تغيير الثيم ليل / نهار", title: "ليل / نهار", style: { padding: "6px 13px" } }, theme === "dark" ? "☀️" : "🌙"),
       cur === "settings" && h("button", { className: "btn btn-ghost", onClick: () => go("feedback"), "aria-label": "ابعت فيدباك", title: "ابعت فيدباك", style: { padding: "6px 11px" } }, "✉️"),
       cur !== "settings" && cur !== "feedback" && h("button", { className: "btn btn-ghost", onClick: () => go("settings"), "aria-label": "الإعدادات", style: { padding: "6px 11px" } }, "⚙️")),
     adhanTap && h("div", { style: { position: "fixed", bottom: "calc(20px + env(safe-area-inset-bottom))", left: 0, right: 0, display: "flex", flexWrap: "wrap", justifyContent: "center", alignItems: "center", gap: 8, zIndex: 60, padding: "0 12px" } },
@@ -1779,7 +1792,7 @@ function App() {
     const { data: sub } = sb.auth.onAuthStateChange((ev, s) => { if (ev === "PASSWORD_RECOVERY") setRecovery(true); setSession(s || null); });
     return () => sub.subscription.unsubscribe();
   }, []);
-  useEffect(() => { document.documentElement.setAttribute("data-theme", lsGet("allinone:theme", "light")); }, []);
+  useEffect(() => { document.documentElement.setAttribute("data-theme", themeNow()); }, []);
   if (session === undefined) return h(Splash, { text: "…" });
   if (!session) return h(AuthScreen, {});
   if (recovery) return h(NewPassword, { onDone: () => setRecovery(false) });
