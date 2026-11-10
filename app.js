@@ -1759,7 +1759,7 @@ function Shell({ user }) {
     const greet = hr < 5 ? "سهران؟" : hr < 12 ? "صباح الخير" : hr < 18 ? "نهارك سعيد" : "مساء الخير";
     body = h("div", { className: "fade" },
       h("div", { style: { margin: "6px 2px 18px" } }, h("div", { style: { fontSize: 13, color: "var(--muted)", fontWeight: 700 } }, greet), h("div", { style: { fontSize: 26, fontWeight: 900 } }, prof.name || "")),
-      h(HomeMotivation, null),
+      h(UpdateBanner, {}), h(HomeMotivation, null),
       h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } }, mods.map(id => {
         const m = MODULES.find(x => x.id === id);
         return h("button", { key: id, onClick: () => go(id), className: "card", style: { textAlign: "right", cursor: "pointer", padding: 16, minHeight: 120, display: "flex", flexDirection: "column", justifyContent: "space-between", color: "var(--text)" } },
@@ -2658,6 +2658,32 @@ function MealsModule() {
 // الأذكار والمصحف (ملف athkar.js)
 // ══════════════════════════════════════════════════════════════
 const HOME_MOTIVATION = ["خطوة صغيرة النهارده، فرق كبير بعد شهر.","ربنا يعينك على يومك ويبارك في وقتك.","لسه قدامك وقت تنظّم بيه يومك كله.","كل يوم تحاول فيه، إنجاز يتحسبلك.","ابدأ بسم الله، والباقي هييجي بإذن الله.","الاستمرار أهم من الكمال.","يومك الجاي أحسن من اللي فات بإذن الله.","توكل على الله وامشي في طريقك بثقة.","شوية شوية، والحمل التقيل بيخف بإذن الله.","اللي بيبدأ بنية صافية، ربنا بيفتحله الأبواب.","قرش النهارده بيبني أمان بكرة.","نظّم فلوسك النهارده، وارتاح بالك بكرة.","التعب اللي بتتعبه دلوقتي، هتشوف تمرته قريب.","ماتستهونش بخطوة، كل الطرق الطويلة بتبدأ بخطوة.","استعن بالله ولا تعجز، وكمّل يومك بهمّة.","اللي يحافظ على القليل، ربنا يبارك له في الكتير.","ركّز في اللي في إيدك النهارده، وسيب الباقي على الله.","كل حاجة بتتظبط لما نصبر ونكمّل.","يوم جديد، فرصة جديدة، وبداية أحسن بإذن الله.","الالتزام الصغير كل يوم أقوى من الحماس المؤقت.","اشكر ربنا على اللي عندك، وابني عليه خطوة خطوة.","ربنا ما بيضيّع تعب حد، كمّل وانت مطمّن.","رتّب أولوياتك، والبركة هتيجي في وقتك وفلوسك.","كل ما تحاسب نفسك، بتبقى أقرب لهدفك."];
+// ── إشعار تحديث نسخة الأندرويد (بيظهر في تطبيق الموبايل بس) ──
+function UpdateBanner() {
+  const [u, setU] = useState(null);
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      try {
+        const C = window.Capacitor; if (!(C && C.isNativePlatform && C.isNativePlatform())) return;
+        const P = C.Plugins && C.Plugins.WidgetPin;
+        const r = await fetch("https://api.github.com/repos/" + APK_REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } }); if (!r.ok) return;
+        const j = await r.json(); const m = /(\d+)\s*$/.exec(String(j.tag_name || "")); const latest = m ? Number(m[1]) : 0; if (!latest) return;
+        let cur = 0; if (P) { const inf = await P.info(); cur = Number(inf && inf.code) || 0; }
+        // نسخة قديمة جدًا (من غير رقم إصدار) أو أقدم من آخر إصدار → فيه تحديث
+        if (cur >= latest) return;
+        if (lsGet("allinone:updDismiss", 0) === latest) return;
+        const a = (j.assets || []).find(x => /\.apk$/i.test(x.name || "")) || (j.assets || [])[0];
+        if (!off) setU({ latest, url: (a && a.browser_download_url) || j.html_url });
+      } catch (e) {}
+    })();
+    return () => { off = true; };
+  }, []);
+  if (!u) return null;
+  return h("div", { style: { display: "flex", alignItems: "center", gap: 8, margin: "0 0 14px", padding: "10px 12px", borderRadius: 16, background: "linear-gradient(135deg,#1c7a7a,#d9a441)", color: "#fff" } },
+    h("a", { href: u.url, target: "_blank", rel: "noopener", style: { flex: 1, color: "#fff", textDecoration: "none", fontWeight: 800, fontSize: 13, lineHeight: 1.6 } }, "✨ فيه تحديث جديد للتطبيق — دوس هنا وحمّله"),
+    h("button", { "aria-label": "إخفاء", onClick: () => { lsSet("allinone:updDismiss", u.latest); setU(null); }, style: { background: "rgba(255,255,255,.2)", border: "none", color: "#fff", borderRadius: 10, width: 28, height: 28, cursor: "pointer", fontSize: 14 } }, "✕"));
+}
 function HomeMotivation() {
   const pick = avoid => { let i = Math.floor(Math.random() * HOME_MOTIVATION.length); if (i === avoid) i = (i + 1) % HOME_MOTIVATION.length; lsSet("allinone:home_motiv", i); return i; };
   const [idx, setIdx] = useState(() => pick(lsGet("allinone:home_motiv", -1)));
