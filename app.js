@@ -1547,12 +1547,39 @@ function ApkCard() {
   const [rel, setRel] = useState(undefined);
   const native = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
   useEffect(() => { let off = false; fetch("https://api.github.com/repos/" + APK_REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } }).then(r => r.ok ? r.json() : null).then(j => { if (!off) setRel(j || null); }).catch(() => { if (!off) setRel(null); }); return () => { off = true; }; }, []);
+  const [cur, setCur] = useState(-1); const [pct, setPct] = useState(-1); const [imsg, setImsg] = useState("");
+  const WP = native && window.Capacitor.Plugins && window.Capacitor.Plugins.WidgetPin;
+  useEffect(() => { if (!native) return; if (!WP) { setCur(0); return; } WP.info().then(r => setCur(Number(r && r.code) || 0)).catch(() => setCur(0)); }, []);
   const asset = rel && (rel.assets || []).find(a => /\.apk$/i.test(a.name));
+  const latest = rel ? Number(((/(\d+)\s*$/.exec(String(rel.tag_name || "")) || [])[1]) || 0) : 0;
+  const doInstall = async () => {
+    if (!asset || !WP) return; setImsg(""); setPct(0); let sub = null;
+    try {
+      sub = await WP.addListener("dl", e => setPct(Number(e && e.pct) || 0));
+      const r = await WP.install({ url: asset.browser_download_url });
+      if (r && r.needPerm) setImsg("فعّل «السماح بتثبيت التطبيقات» للتطبيق في الصفحة اللي اتفتحت، وارجع واضغط تاني.");
+      else { lsSet("allinone:updDismiss", latest); setImsg("اتحمّل ✅ — دوس «تثبيت» في الشاشة اللي ظهرت، وبعدها افتح التطبيق."); }
+    } catch (e) { setImsg("حصلت مشكلة في التحميل. جرّب تاني."); }
+    setPct(-1); try { if (sub) sub.remove(); } catch (e) {}
+  };
   const sha = asset && asset.digest ? String(asset.digest).replace(/^sha256:/, "").toUpperCase() : "";
   const mb = asset ? Math.round(asset.size / 1048576) : 0;
   const steps = [["⬇️", "حمّل الملف", "اضغط «حمّل الـ APK». لو المتصفح قالك إن الملف ممكن يضر جهازك، اضغط «تنزيل على أي حال»: التحذير ده بيطلع لأي أبليكيشن من برا المتجر."], ["🛡️", "اسمح بالتثبيت من المتصفح", "لو أندرويد سألك، اضغط «الإعدادات» وفعّل «السماح من هذا المصدر»، وارجع."], ["📦", "افتح الملف واضغط «تثبيت»", "من إشعار التحميل أو من تطبيق «الملفات». لو Play Protect قالك إنه تطبيق مش معروف، اختار «التثبيت على أي حال»."], ["▶️", "افتح «AllinOne» واطلع", "هتلاقيه في شاشة الأبليكيشنات. بياناتك على حسابك فمش هتضيع."]];
   const box = { background: "var(--card2, rgba(127,127,127,.08))", border: "1px solid var(--border, rgba(127,127,127,.25))", borderRadius: 14, padding: "10px 12px", marginBottom: 8 };
-  if (native) return h("div", { style: { fontSize: 13, color: "var(--muted)", lineHeight: 1.9 } }, "إنت شغّال على نسخة أندرويد بالفعل ✅ ");
+  if (native) {
+    const hasUpd = !!(rel && latest > 0 && cur >= 0 && cur < latest);
+    return h("div", { style: { fontSize: 13, lineHeight: 1.9 } },
+      (rel === undefined || cur < 0) ? h("div", { style: { color: "var(--muted)" } }, "بشوف آخر إصدار…")
+        : !hasUpd ? h("div", { style: { color: "var(--muted)" } }, "إنت شغّال على آخر إصدار ✅" + (cur ? " (v1.0." + cur + ")" : ""))
+        : h("div", null,
+          h("div", { style: { fontWeight: 900, marginBottom: 6 } }, "✨ فيه تحديث جديد " + (rel.tag_name || "") + (mb > 0 ? " — " + mb + " ميجا" : "")),
+          rel.body && h("div", { style: Object.assign({}, box, { fontSize: 12.5, lineHeight: 1.8, whiteSpace: "pre-wrap" }) }, String(rel.body).slice(0, 300)),
+          asset ? (WP
+            ? h("button", { className: "btn btn-primary", disabled: pct >= 0, onClick: doInstall, style: { width: "100%", padding: 14, fontSize: 16, fontWeight: 900 } }, pct >= 0 ? "⏳ بيتحمّل… " + pct + "%" : "⬇️ حمّل وثبّت التحديث")
+            : h("a", { href: asset.browser_download_url, className: "btn btn-primary", style: { display: "block", textAlign: "center", textDecoration: "none", padding: 14, fontSize: 16, fontWeight: 900 } }, "⬇️ حمّل الـ APK الجديد"))
+            : h("div", { style: box }, "الإصدار منشور بس من غير ملف APK."),
+          imsg && h("div", { style: Object.assign({}, box, { marginTop: 8, fontSize: 12.5 }) }, imsg)));
+  }
   return h("div", null,
     rel === undefined && h("div", { style: { color: "var(--muted)", fontSize: 13 } }, "بحمّل بيانات آخر إصدار…"),
     rel === null && h("div", { style: Object.assign({}, box, { fontSize: 13 }) }, "لسه مفيش إصدار منشور (أو المستودع خاص). أول ما يتنشر Release هيظهر هنا لوحده."),
@@ -1622,7 +1649,8 @@ function SettingsScreen({ prof, setProf, theme, setTheme, onLogout }) {
   const [height, setHeight] = useState(prof.heightCm || ""); const [goal, setGoal] = useState(prof.goalKg || "");
   const [startDay, setStartDay] = useState(prof.monthStartDay || 1); const [gender, setGender] = useState(prof.gender || ""); const [famG, setFamG] = useState(prof.familyGender || "m"); const [ride, setRide] = useState(!!prof.ride);
   const mods = prof.modules || [];
-  const [openG, setOpenG] = useState(window.__scrollBackup ? "backup" : "");
+  const [openG, setOpenG] = useState(window.__openApk ? "apk" : window.__scrollBackup ? "backup" : "");
+  useEffect(() => { window.__openApk = false; const f = () => setOpenG("apk"); window.addEventListener("allinone:open-apk", f); return () => window.removeEventListener("allinone:open-apk", f); }, []);
   useEffect(() => { const f = () => setOpenG("backup"); window.addEventListener("allinone:open-backup", f); return () => window.removeEventListener("allinone:open-backup", f); }, []);
   const grp = (id, title, body) => h("div", { className: "card", style: { marginBottom: 10, padding: 0, overflow: "hidden" } },
     h("button", { type: "button", onClick: () => setOpenG(g => g === id ? "" : id), "aria-expanded": openG === id, style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "none", border: "none", color: "var(--text)", fontWeight: 900, fontSize: 15, padding: "14px 16px", cursor: "pointer", fontFamily: "inherit" } }, h("span", null, title), h("span", { style: { fontSize: 12, color: "var(--muted)" } }, openG === id ? "▲" : "▼")),
@@ -1759,7 +1787,7 @@ function Shell({ user }) {
     const greet = hr < 5 ? "سهران؟" : hr < 12 ? "صباح الخير" : hr < 18 ? "نهارك سعيد" : "مساء الخير";
     body = h("div", { className: "fade" },
       h("div", { style: { margin: "6px 2px 18px" } }, h("div", { style: { fontSize: 13, color: "var(--muted)", fontWeight: 700 } }, greet), h("div", { style: { fontSize: 26, fontWeight: 900 } }, prof.name || "")),
-      h(UpdateBanner, {}), h(HomeMotivation, null),
+      h(UpdateBanner, { go }), h(HomeMotivation, null),
       h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } }, mods.map(id => {
         const m = MODULES.find(x => x.id === id);
         return h("button", { key: id, onClick: () => go(id), className: "card", style: { textAlign: "right", cursor: "pointer", padding: 16, minHeight: 120, display: "flex", flexDirection: "column", justifyContent: "space-between", color: "var(--text)" } },
@@ -2659,7 +2687,7 @@ function MealsModule() {
 // ══════════════════════════════════════════════════════════════
 const HOME_MOTIVATION = ["خطوة صغيرة النهارده، فرق كبير بعد شهر.","ربنا يعينك على يومك ويبارك في وقتك.","لسه قدامك وقت تنظّم بيه يومك كله.","كل يوم تحاول فيه، إنجاز يتحسبلك.","ابدأ بسم الله، والباقي هييجي بإذن الله.","الاستمرار أهم من الكمال.","يومك الجاي أحسن من اللي فات بإذن الله.","توكل على الله وامشي في طريقك بثقة.","شوية شوية، والحمل التقيل بيخف بإذن الله.","اللي بيبدأ بنية صافية، ربنا بيفتحله الأبواب.","قرش النهارده بيبني أمان بكرة.","نظّم فلوسك النهارده، وارتاح بالك بكرة.","التعب اللي بتتعبه دلوقتي، هتشوف تمرته قريب.","ماتستهونش بخطوة، كل الطرق الطويلة بتبدأ بخطوة.","استعن بالله ولا تعجز، وكمّل يومك بهمّة.","اللي يحافظ على القليل، ربنا يبارك له في الكتير.","ركّز في اللي في إيدك النهارده، وسيب الباقي على الله.","كل حاجة بتتظبط لما نصبر ونكمّل.","يوم جديد، فرصة جديدة، وبداية أحسن بإذن الله.","الالتزام الصغير كل يوم أقوى من الحماس المؤقت.","اشكر ربنا على اللي عندك، وابني عليه خطوة خطوة.","ربنا ما بيضيّع تعب حد، كمّل وانت مطمّن.","رتّب أولوياتك، والبركة هتيجي في وقتك وفلوسك.","كل ما تحاسب نفسك، بتبقى أقرب لهدفك."];
 // ── إشعار تحديث نسخة الأندرويد (بيظهر في تطبيق الموبايل بس) ──
-function UpdateBanner() {
+function UpdateBanner({ go }) {
   const [u, setU] = useState(null);
   useEffect(() => {
     let off = false;
@@ -2681,7 +2709,7 @@ function UpdateBanner() {
   }, []);
   if (!u) return null;
   return h("div", { style: { display: "flex", alignItems: "center", gap: 8, margin: "0 0 14px", padding: "10px 12px", borderRadius: 16, background: "linear-gradient(135deg,#1c7a7a,#d9a441)", color: "#fff" } },
-    h("a", { href: u.url, target: "_blank", rel: "noopener", style: { flex: 1, color: "#fff", textDecoration: "none", fontWeight: 800, fontSize: 13, lineHeight: 1.6 } }, "✨ فيه تحديث جديد للتطبيق — دوس هنا وحمّله"),
+    h("div", { role: "button", onClick: () => { window.__openApk = true; window.dispatchEvent(new Event("allinone:open-apk")); go("settings"); }, style: { flex: 1, color: "#fff", cursor: "pointer", fontWeight: 800, fontSize: 13, lineHeight: 1.6 } }, "✨ فيه تحديث جديد — دوس هنا لتحميله وتثبيته"),
     h("button", { "aria-label": "إخفاء", onClick: () => { lsSet("allinone:updDismiss", u.latest); setU(null); }, style: { background: "rgba(255,255,255,.2)", border: "none", color: "#fff", borderRadius: 10, width: 28, height: 28, cursor: "pointer", fontSize: 14 } }, "✕"));
 }
 function HomeMotivation() {
