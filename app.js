@@ -26,7 +26,7 @@ const h = React.createElement;
 
 function start() {
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-const APP_VERSION = "v2026.11.06-a";
+const APP_VERSION = "v2026.11.14-a";
 if ("serviceWorker" in navigator && navigator.serviceWorker.controller) { let rl = false; navigator.serviceWorker.addEventListener("controllerchange", () => { if (rl) return; rl = true; location.reload(); }); }
 if ("serviceWorker" in navigator) { const reg = () => navigator.serviceWorker.register("./sw.js").catch(() => {}); if (document.readyState === "complete") reg(); else window.addEventListener("load", reg); }
 
@@ -2695,6 +2695,7 @@ function UpdateBanner({ go }) {
       try {
         const C = window.Capacitor; if (!(C && C.isNativePlatform && C.isNativePlatform())) return;
         const P = C.Plugins && C.Plugins.WidgetPin;
+        try { if (P && P.pin && !lsGet("allinone:widgetAsked", 0)) { lsSet("allinone:widgetAsked", 1); P.pin().catch(() => {}); } } catch (e) {}
         const r = await fetch("https://api.github.com/repos/" + APK_REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } }); if (!r.ok) return;
         const j = await r.json(); const m = /(\d+)\s*$/.exec(String(j.tag_name || "")); const latest = m ? Number(m[1]) : 0; if (!latest) return;
         let cur = 0; if (P) { const inf = await P.info(); cur = Number(inf && inf.code) || 0; }
