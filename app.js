@@ -26,7 +26,7 @@ const h = React.createElement;
 
 function start() {
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-const APP_VERSION = "v2026.11.14-a";
+const APP_VERSION = "v2026.11.22-a";
 if ("serviceWorker" in navigator && navigator.serviceWorker.controller) { let rl = false; navigator.serviceWorker.addEventListener("controllerchange", () => { if (rl) return; rl = true; location.reload(); }); }
 if ("serviceWorker" in navigator) { const reg = () => navigator.serviceWorker.register("./sw.js").catch(() => {}); if (document.readyState === "complete") reg(); else window.addEventListener("load", reg); }
 
@@ -633,6 +633,69 @@ function ReceiptScan({ docKey, icons, onSaved }) {
       draft.total > 0 && Math.abs(draft.total - sum) > Math.max(2, draft.total * .02) && h("div", { style: { fontSize: 12, color: "var(--warn, #d97706)", marginBottom: 8 } }, "إجمالي الفاتورة المكتوب " + fmt(draft.total) + " — راجع البنود لو في حاجة ناقصة."),
       h("button", { className: "btn btn-primary", style: { width: "100%", marginTop: 8 }, disabled: !draft.items.length, onClick: save }, "حفظ كمصروفات (" + draft.items.length + ")")));
 }
+// ══════════════════════════════════════════════════════════════
+// قاعدة 50 / 30 / 20 (أساسيات / خروجات / تحويش) — كل جنيه ليه مكان قبل ما تصرفه
+// ══════════════════════════════════════════════════════════════
+const RULE_SUBS = {
+  need: { t: "🏠 أساسيات", c: "var(--accent)", s: [["n_house", "🏠 إيجار وسكن", 60], ["n_food", "🛒 أكل البيت", 22.5], ["n_bills", "💡 فواتير واتصالات", 10], ["n_trans", "🚌 مواصلات الشغل", 7.5], ["n_other", "📦 أساسيات تانية (صحة، تعليم…)", 0]] },
+  want: { t: "🎉 خروجات", c: "#d9a441", s: [["w_out", "🍔 أوردرات وخروجات", 50], ["w_ride", "🚗 أوبر ومواصلات", 2500 / 120], ["w_shop", "🛍️ تسوق", 2500 / 120], ["w_sub", "🎬 اشتراكات", 1000 / 120], ["w_other", "🧾 تاني", 0]] },
+  save: { t: "💰 تحويش", c: "var(--ok)", s: [["s_emg", "🛟 صندوق طوارئ", 37.5], ["s_goal", "✈️ سفر أو هدف قريب", 18.75], ["s_inv", "📈 استثمار", 43.75]] }
+};
+const RULE_DEF = { "أكل وسوبر ماركت": "n_food", "البيت والفواتير": "n_house", "مواصلات": "n_trans", "صحة": "n_other", "تعليم": "n_other", "اتصالات ونت": "n_bills", "ترفيه": "w_out", "ملابس": "w_shop", "هدايا": "w_shop", "أخرى": "w_other" };
+function Rule503020({ doc, set, docKey, mItems, inc, m }) {
+  const { get } = useData();
+  const rule = doc.rule || {}; const P = rule.p || [50, 30, 20]; const map = rule.map || {};
+  const [sh, setSh] = useState(null); const [f, setF] = useState({}); const [op, setOp] = useState({});
+  const savLog = (get("savings", { log: [] }).log) || [];
+  const base = Number(rule.base) > 0 ? Number(rule.base) : inc;
+  const subOf = i => map[i.cat] || (i.sec === "fix" || FIXED_NAMES.has(i.cat) ? (i.cat === "الإنترنت" ? "n_bills" : "n_house") : i.sec === "car" ? "n_trans" : RULE_DEF[i.cat] || (RCPT_CATS.some(c => c[1] === i.cat) ? "n_food" : "w_other"));
+  const list = mItems.filter(i => i.type !== "inc" && !i.ext && i.sec !== "ride");
+  const sp = {}; list.forEach(i => { const k = subOf(i); sp[k] = (sp[k] || 0) + i.amount; });
+  const savedNow = sumBy(savLog.filter(x => x.type === "in" && monthOf(x.date) === m));
+  const patch = p => set(docKey, d => ({ ...(d || { items: [], budget: 0 }), rule: { ...((d && d.rule) || {}), ...p } }));
+  const allSubs = [].concat(RULE_SUBS.need.s, RULE_SUBS.want.s).map(s => [s[0], s[1]]);
+  const cats = Array.from(new Set(list.map(i => i.cat)));
+  const saveCfg = () => { const a = num(f.a), b = num(f.b), c = num(f.c); if (![a, b, c].every(x => x >= 0) || Math.round(a + b + c) !== 100) return alert("النسب لازم مجموعها 100."); const bs = num(f.base); patch({ base: bs > 0 ? bs : 0, p: [a, b, c] }); setSh(null); };
+  const block = (k, ix) => {
+    const B = RULE_SUBS[k], t = base * P[ix] / 100;
+    const used = k === "save" ? savedNow : sumBy(B.s, s => sp[s[0]] || 0);
+    const pct = t > 0 ? used / t * 100 : 0, bad = k === "save" ? false : used > t;
+    const st = k === "save" ? (used >= t ? "✓ حققت الهدف" : "ناقص " + fmt(t - used, 0)) : (bad ? "عدّيت بـ " + fmt(used - t, 0) : "فاضل " + fmt(t - used, 0));
+    const col = bad ? "var(--danger)" : (k !== "save" && pct >= 80) ? "var(--warn)" : B.c;
+    return h("div", { key: k, style: { marginBottom: 12 } },
+      h("div", { onClick: () => setOp(o => ({ ...o, [k]: !o[k] })), style: { cursor: "pointer" } },
+        h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 } },
+          h("span", { style: { fontWeight: 900, fontSize: 13 } }, B.t + " " + P[ix] + "% " + (op[k] ? "▲" : "▼")),
+          h("span", { style: { fontSize: 11, fontWeight: 800, color: col } }, st)),
+        h(Bar, { pct, color: col }),
+        h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 } }, h("span", null, k === "save" ? "اتحوّش الشهر ده" : "اتصرف"), h("span", null, fmt(used, 0) + " من " + fmt(t, 0)))),
+      op[k] && h("div", { style: { marginTop: 8, paddingRight: 8, borderRight: "3px solid " + B.c } }, B.s.map(([sk, sl, share]) => {
+        const st2 = t * share / 100, u2 = k === "save" ? 0 : (sp[sk] || 0);
+        if (k !== "save" && !share && !u2) return null;
+        return h("div", { key: sk, style: { marginBottom: 8 } },
+          h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 } }, h("span", null, sl), h("span", { style: { color: u2 > st2 && share ? "var(--danger)" : "var(--muted)" } }, k === "save" ? "المقترح " + fmt(st2, 0) : fmt(u2, 0) + (share ? " / " + fmt(st2, 0) : ""))),
+          k !== "save" && share > 0 && h(Bar, { pct: st2 > 0 ? u2 / st2 * 100 : 0, color: u2 > st2 ? "var(--danger)" : B.c }));
+      })));
+  };
+  return h("div", { className: "card", style: { marginBottom: 10 } },
+    h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 } },
+      h("span", { style: { fontWeight: 900, fontSize: 14 } }, "⚖️ قسّم مرتبك " + P.join(" / ")),
+      h("div", { style: { display: "flex", gap: 6 } },
+        h("button", { className: "chip", onClick: () => setSh("map") }, "🔗"),
+        h("button", { className: "chip", onClick: () => { setF({ base: rule.base ? String(rule.base) : "", a: String(P[0]), b: String(P[1]), c: String(P[2]) }); setSh("cfg"); } }, "⚙️"))),
+    h("div", { style: { fontSize: 12, color: "var(--muted)", marginBottom: 12, lineHeight: 1.7 } }, base > 0 ? "الأساس: " + fmt(base, 0) + " ج — كل جنيه ليه مكان قبل ما تصرفه." : "سجّل المرتب كدخل أو حدّد الأساس من ⚙️ عشان التقسيم يشتغل."),
+    base > 0 && [["need", 0], ["want", 1], ["save", 2]].map(([k, ix]) => block(k, ix)),
+    sh === "cfg" && h(Sheet, { title: "تقسيم المرتب", onClose: () => setSh(null) },
+      h(Field, { label: "المرتب الأساسي (اختياري)", hint: "لو سبته فاضي بياخد دخل الشهر المسجّل." }, h("input", { type: "number", inputMode: "decimal", value: f.base || "", onChange: e => setF(x => ({ ...x, base: e.target.value })) })),
+      [["a", "🏠 أساسيات %"], ["b", "🎉 خروجات %"], ["c", "💰 تحويش %"]].map(([k, l]) => h(Field, { key: k, label: l }, h("input", { type: "number", inputMode: "decimal", value: f[k] || "", onChange: e => setF(x => ({ ...x, [k]: e.target.value })) }))),
+      h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: saveCfg }, "حفظ")),
+    sh === "map" && h(Sheet, { title: "ربط الأقسام بالتقسيم", onClose: () => setSh(null) },
+      h("div", { style: { fontSize: 12, color: "var(--muted)", marginBottom: 10, lineHeight: 1.7 } }, "اختار كل قسم بيروح فين في الأساسيات أو الخروجات."),
+      cats.length === 0 && h("div", { style: { fontSize: 13, color: "var(--muted)" } }, "مفيش مصروفات في الشهر ده لسه."),
+      cats.map(c => h(Field, { key: c, label: c }, h("select", { value: subOf({ cat: c, sec: (list.find(i => i.cat === c) || {}).sec }), onChange: e => patch({ map: { ...map, [c]: e.target.value } }) }, allSubs.map(([k, l]) => h("option", { key: k, value: k }, l))))),
+      h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: () => setSh(null) }, "تمام")));
+}
+
 function ExpensesModule({ docKey, who, ride }) {
   const { get, set } = useData();
   const doc = get(docKey, { items: [], budget: 0 });
@@ -704,6 +767,7 @@ function ExpensesModule({ docKey, who, ride }) {
             h("div", { style: { fontSize: 12, color: "var(--muted)", marginTop: 8 } }, exp > budget ? "تعدّيت الميزانية بـ " + fmt(exp - budget, 0) : "فاضل " + fmt(budget - exp, 0) + " من الميزانية"))
         : h("div", { style: { fontSize: 13, color: "var(--muted)" } }, "لسه ماحدّدتش ميزانية للشهر."),
       h("button", { className: "btn btn-ghost", style: { width: "100%", marginTop: 10, padding: "9px" }, onClick: () => { setBud(budget ? String(budget) : ""); setSheet("budget"); } }, budget ? "تعديل الميزانية" : "حدّد ميزانية")),
+    main && h(Rule503020, { doc, set, docKey, mItems, inc, m }),
     h("div", { className: "card", style: { marginBottom: 10 } },
       h("div", { style: { fontWeight: 900, fontSize: 14, marginBottom: 10 } }, "🎯 ميزانيات الأقسام"),
       Object.keys(cbs).length === 0
@@ -909,6 +973,77 @@ const carCat = id => { const c = CAR_CATS.find(x => x[0] === id) || CAR_CATS[6];
 const IND_TYPES = { order: ["📦", "أوردر"], petrol: ["⛽", "بنزين"], tax: ["🧾", "ضريبة / عمولة التطبيق"], tire: ["🛞", "نفخ كاوتش"] };
 const sumBy = (a, f) => a.reduce((s, x) => s + (Number(f ? f(x) : x.amount) || 0), 0);
 
+// ── جدول الصيانة والتذكيرات (زيت وفلاتر… بالكيلومتر والشهور) ──
+const SVC_DEF = [["oil", "🛢️", "زيت موتور", 7000, 6], ["oilf", "🛢️", "فلتر زيت", 7000, 6], ["air", "🌬️", "فلتر هواء", 15000, 12], ["ac", "❄️", "فلتر مكيف", 15000, 12], ["fuel", "⛽", "فلتر بنزين", 30000, 24], ["brk", "⚙️", "فحص الفرامل", 20000, 12], ["tyre", "🔘", "ترصيص وتبديل الكاوتش", 10000, 6], ["bat", "🔋", "البطارية", 0, 36]];
+const svcAddMo = (ds, k) => { const [y, m, d] = ds.split("-").map(Number); const dt = new Date(y, m - 1 + k, d); return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate()); };
+const svcDays = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 864e5);
+function svcCalc(s, curOdo, perDay) {
+  const td = todayStr();
+  const leftKm = s.km > 0 && s.lastKm > 0 && curOdo > 0 ? s.lastKm + s.km - curOdo : null;
+  let due = s.mo > 0 && s.lastDate ? svcAddMo(s.lastDate, s.mo) : null;
+  if (leftKm != null && perDay > 0) { const pd = addDaysStr(td, Math.max(0, Math.round(leftKm / perDay))); if (!due || pd < due) due = pd; }
+  const leftDays = due ? svcDays(td, due) : null;
+  const lv = (leftKm != null && leftKm <= 0) || (leftDays != null && leftDays <= 0) ? 2 : (leftKm != null && leftKm <= 500) || (leftDays != null && leftDays <= 14) ? 1 : 0;
+  return { leftKm, due, leftDays, lv, known: leftKm != null || due != null };
+}
+async function svcSchedule(items) {
+  try {
+    const LN = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications; if (!LN) return false;
+    try { await LN.requestPermissions(); } catch (e) {}
+    const ids = []; for (let i = 0; i < 40; i++) ids.push({ id: 9300 + i });
+    try { await LN.cancel({ notifications: ids }); } catch (e) {}
+    const list = [], now = new Date();
+    items.forEach(it => { if (!it.due) return;[[3, "قربت"], [0, "ميعادها النهارده"]].forEach(([b, w]) => { const d = new Date(addDaysStr(it.due, -b) + "T10:00:00"); if (d > now && list.length < 40) list.push({ id: 9300 + list.length, title: "🚗 صيانة العربية", body: it.name + " — " + w, schedule: { at: d, allowWhileIdle: true }, channelId: "reminders", largeIcon: "ic_large", smallIcon: "ic_stat_icon" }); }); });
+    if (list.length) await LN.schedule({ notifications: list });
+    return true;
+  } catch (e) { return false; }
+}
+function CarService({ doc, upd, curOdo, toast }) {
+  const svc = doc.svc || SVC_DEF.map(([id, ic, name, km, mo]) => ({ id, ic, name, km, mo, lastKm: 0, lastDate: "" }));
+  const odo = doc.odo || {};
+  const [ed, setEd] = useState(null); const [f, setF] = useState({}); const [open, setOpen] = useState(true);
+  const perDay = useMemo(() => { const ks = Object.keys(odo).filter(k => Number(odo[k]) > 0).sort(); if (ks.length < 2) return 0; const a = ks[0], b = ks[ks.length - 1]; const d = svcDays(a + "-01", b + "-01"); return d > 0 ? (Number(odo[b]) - Number(odo[a])) / d : 0; }, [JSON.stringify(odo)]);
+  const calc = svc.map(s => ({ ...s, ...svcCalc(s, curOdo, perDay) }));
+  const key = JSON.stringify(calc.map(c => [c.id, c.due]));
+  useEffect(() => { if (doc.notif) svcSchedule(calc); }, [key, doc.notif]);
+  const setSvc = fn => upd(d => ({ ...d, svc: fn(d.svc || svc) }));
+  const done = id => { if (!(curOdo > 0)) return toast("سجّل قراءة العداد الأول."); setSvc(l => l.map(s => s.id === id ? { ...s, lastKm: curOdo, lastDate: todayStr() } : s)); toast("اتسجّل ✓"); };
+  const msg = list => "🚗 تذكير صيانة العربية:\n" + list.map(c => "• " + c.name + (c.leftKm != null ? (c.leftKm <= 0 ? " — متأخر " + Math.abs(c.leftKm) + " كم" : " — باقي " + c.leftKm + " كم") : "") + (c.due ? " (" + c.due + ")" : "")).join("\n");
+  const wa = list => { const n = String(doc.waNum || "").replace(/\D/g, ""); window.open("https://wa.me/" + n + "?text=" + encodeURIComponent(msg(list)), "_blank"); };
+  const urgent = calc.filter(c => c.lv > 0);
+  const saveEd = () => { const km = num(f.km), mo = num(f.mo), lk = num(f.lastKm); setSvc(l => l.map(s => s.id === ed ? { ...s, name: f.name || s.name, km: km > 0 ? km : 0, mo: mo > 0 ? mo : 0, lastKm: lk > 0 ? lk : 0, lastDate: f.lastDate || "" } : s)); setEd(null); };
+  const col = lv => lv === 2 ? "var(--danger)" : lv === 1 ? "var(--warn)" : "var(--ok)";
+  return h("div", { className: "card", style: { marginBottom: 10 } },
+    h("div", { onClick: () => setOpen(!open), style: { display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", marginBottom: open ? 10 : 0 } },
+      h("span", { style: { fontWeight: 900, fontSize: 14 } }, "🛠️ جدول الصيانة والتذكيرات"),
+      h("span", { style: { fontSize: 12, fontWeight: 800, color: urgent.length ? "var(--warn)" : "var(--muted)" } }, (urgent.length ? urgent.length + " مستنّي " : "") + (open ? "▲" : "▼"))),
+    open && h("div", null,
+      calc.map((c, i) => h("div", { key: c.id, style: { padding: "9px 0", borderTop: i ? "1px solid var(--line)" : "none" } },
+        h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+          h("span", { style: { fontSize: 18 } }, c.ic),
+          h("div", { style: { flex: 1, minWidth: 0 } },
+            h("div", { style: { fontWeight: 800, fontSize: 13 } }, c.name),
+            h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 2 } }, c.known ? [c.leftKm != null ? (c.leftKm <= 0 ? "⚠️ متأخر " + fmt(Math.abs(c.leftKm), 0) + " كم" : "باقي " + fmt(c.leftKm, 0) + " كم") : "", c.due ? "ميعادها " + c.due : ""].filter(Boolean).join(" · ") : "لسه ماتسجّلش آخر ميعاد — دوس ✏️")),
+          c.known && h("span", { style: { width: 10, height: 10, borderRadius: 99, background: col(c.lv), flexShrink: 0 } }),
+          h("button", { onClick: () => done(c.id), className: "chip", style: { padding: "5px 9px", fontSize: 11 } }, "اتعمل ✓"),
+          h("button", { onClick: () => wa([c]), style: { background: "none", border: "none", cursor: "pointer", fontSize: 16 }, "aria-label": "واتساب" }, "📲"),
+          h("button", { onClick: () => { setF({ name: c.name, km: String(c.km || ""), mo: String(c.mo || ""), lastKm: String(c.lastKm || ""), lastDate: c.lastDate || "" }); setEd(c.id); }, style: { background: "none", border: "none", cursor: "pointer", fontSize: 14 }, "aria-label": "تعديل" }, "✏️")))),
+      h("div", { style: { display: "flex", gap: 8, marginTop: 10 } },
+        h("button", { className: "btn btn-ghost", style: { flex: 1, fontSize: 12, padding: 9 }, onClick: () => wa(urgent.length ? urgent : calc.filter(c => c.known)) }, "📲 ابعتلي على واتساب"),
+        h("button", { className: "btn btn-ghost", style: { flex: 1, fontSize: 12, padding: 9 }, onClick: async () => { const ok = await svcSchedule(calc); upd(d => ({ ...d, notif: ok })); toast(ok ? "الإشعارات اتفعّلت ✓" : "الإشعارات شغالة في تطبيق الأندرويد بس."); } }, doc.notif ? "🔔 الإشعارات شغالة" : "🔔 فعّل الإشعارات")),
+      h("div", { style: { marginTop: 8 } }, h("input", { type: "tel", inputMode: "tel", value: doc.waNum || "", onChange: e => upd(d => ({ ...d, waNum: e.target.value })), placeholder: "رقم واتساب بالكود (مثلاً 201001234567) — اختياري" })),
+      h("div", { style: { marginTop: 8 } }, h("input", { value: doc.waKey || "", onChange: e => upd(d => ({ ...d, waKey: e.target.value.trim() })), placeholder: "مفتاح CallMeBot (للتذكير الأوتوماتيك) — اختياري" })),
+      h("div", { style: { marginTop: 8 } }, h("input", { inputMode: "numeric", value: doc.tgChat || "", onChange: e => upd(d => ({ ...d, tgChat: e.target.value.trim() })), placeholder: "Telegram Chat ID (تذكير أوتوماتيك مجاني) — اختياري" })),
+      h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 } }, "المواعيد افتراضية، عدّلها حسب كتيّب عربيتك. الميعاد بيتحسب بالكيلومتر أو الشهور (الأقرب)، ومعدل مشيك اليومي من قراءات العداد.")),
+    ed && h(Sheet, { title: "تعديل بند الصيانة", onClose: () => setEd(null) },
+      h(Field, { label: "الاسم" }, h("input", { value: f.name || "", onChange: e => setF(x => ({ ...x, name: e.target.value })) })),
+      h(Field, { label: "كل كام كم؟ (0 = مش بالكيلومتر)" }, h("input", { type: "number", inputMode: "numeric", value: f.km || "", onChange: e => setF(x => ({ ...x, km: e.target.value })) })),
+      h(Field, { label: "كل كام شهر؟ (0 = مش بالشهور)" }, h("input", { type: "number", inputMode: "numeric", value: f.mo || "", onChange: e => setF(x => ({ ...x, mo: e.target.value })) })),
+      h(Field, { label: "آخر مرة اتعملت عند (كم)" }, h("input", { type: "number", inputMode: "numeric", value: f.lastKm || "", onChange: e => setF(x => ({ ...x, lastKm: e.target.value })) })),
+      h(Field, { label: "تاريخ آخر مرة" }, h("input", { type: "date", value: f.lastDate || "", onChange: e => setF(x => ({ ...x, lastDate: e.target.value })) })),
+      h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: saveEd }, "حفظ")));
+}
+
 function CarModule({ prof }) {
   const { get, set } = useData();
   const doc = get("car", {});
@@ -973,6 +1108,7 @@ function CarModule({ prof }) {
       h("div", { key: "i", style: { display: "flex", gap: 8 } },
         h("input", { type: "number", inputMode: "numeric", placeholder: needsOdo ? "اكتب عداد الشهر ده..." : "تحديث العداد", value: odoIn, onChange: e => setOdoIn(e.target.value) }),
         h("button", { className: "btn btn-primary", style: { padding: "0 20px" }, onClick: saveOdo }, "حفظ"))]),
+    h(CarService, { doc, upd, curOdo, toast }),
     lbl("🔔 المواعيد الجاية"),
     dueList.length === 0 ? box(h("div", { style: { fontSize: 12, color: "var(--muted)", lineHeight: 1.9 } }, "مفيش أي بند محدد له ميعاد جاي. لما تضيف صيانة، املا خانة «🎯 الميعاد الجاي عند (كم)» وهيظهر هنا تنبيه أوتوماتيك.")) :
       box(dueList.map((it, i) => {
