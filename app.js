@@ -26,7 +26,7 @@ const h = React.createElement;
 
 function start() {
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-const APP_VERSION = "v2026.11.22-a";
+const APP_VERSION = "v2026.11.24-b";
 if ("serviceWorker" in navigator && navigator.serviceWorker.controller) { let rl = false; navigator.serviceWorker.addEventListener("controllerchange", () => { if (rl) return; rl = true; location.reload(); }); }
 if ("serviceWorker" in navigator) { const reg = () => navigator.serviceWorker.register("./sw.js").catch(() => {}); if (document.readyState === "complete") reg(); else window.addEventListener("load", reg); }
 
@@ -645,12 +645,13 @@ const RULE_DEF = { "أكل وسوبر ماركت": "n_food", "البيت وال�
 function Rule503020({ doc, set, docKey, mItems, inc, m }) {
   const { get } = useData();
   const rule = doc.rule || {}; const P = rule.p || [50, 30, 20]; const map = rule.map || {};
-  const [sh, setSh] = useState(null); const [f, setF] = useState({}); const [op, setOp] = useState({});
+  const [sh, setSh] = useState(null); const [f, setF] = useState({}); const [op, setOp] = useState({}); const [ex, setEx] = useState("");
   const savLog = (get("savings", { log: [] }).log) || [];
   const base = Number(rule.base) > 0 ? Number(rule.base) : inc;
-  const subOf = i => map[i.cat] || (i.sec === "fix" || FIXED_NAMES.has(i.cat) ? (i.cat === "الإنترنت" ? "n_bills" : "n_house") : i.sec === "car" ? "n_trans" : RULE_DEF[i.cat] || (RCPT_CATS.some(c => c[1] === i.cat) ? "n_food" : "w_other"));
+  const imap = rule.imap || {};
+  const subOf = i => imap[i.id] || map[i.cat] || (i.sec === "fix" || FIXED_NAMES.has(i.cat) ? (i.cat === "الإنترنت" ? "n_bills" : "n_house") : i.sec === "car" ? "n_trans" : RULE_DEF[i.cat] || (RCPT_CATS.some(c => c[1] === i.cat) ? "n_food" : "w_other"));
   const list = mItems.filter(i => i.type !== "inc" && !i.ext && i.sec !== "ride");
-  const sp = {}; list.forEach(i => { const k = subOf(i); sp[k] = (sp[k] || 0) + i.amount; });
+  const sp = {}, cb = {}, ib = {}; list.forEach(i => { const k = subOf(i); (ib[k] = ib[k] || []).push(i); sp[k] = (sp[k] || 0) + i.amount; cb[k] = cb[k] || {}; cb[k][i.cat] = (cb[k][i.cat] || 0) + i.amount; });
   const savedNow = sumBy(savLog.filter(x => x.type === "in" && monthOf(x.date) === m));
   const patch = p => set(docKey, d => ({ ...(d || { items: [], budget: 0 }), rule: { ...((d && d.rule) || {}), ...p } }));
   const allSubs = [].concat(RULE_SUBS.need.s, RULE_SUBS.want.s).map(s => [s[0], s[1]]);
@@ -673,9 +674,14 @@ function Rule503020({ doc, set, docKey, mItems, inc, m }) {
         const st2 = t * share / 100, u2 = k === "save" ? 0 : (sp[sk] || 0);
         if (k !== "save" && !share && !u2) return null;
         return h("div", { key: sk, style: { marginBottom: 8 } },
-          h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 } }, h("span", null, sl), h("span", { style: { color: u2 > st2 && share ? "var(--danger)" : "var(--muted)" } }, k === "save" ? "المقترح " + fmt(st2, 0) : fmt(u2, 0) + (share ? " / " + fmt(st2, 0) : ""))),
+          h("div", { onClick: () => k !== "save" && setEx(ex === sk ? "" : sk), style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3, cursor: k !== "save" ? "pointer" : "default" } }, h("span", null, sl + (k !== "save" && ib[sk] ? (ex === sk ? " ▲" : " ▼") : "")), h("span", { style: { color: u2 > st2 && share ? "var(--danger)" : "var(--muted)" } }, k === "save" ? "المقترح " + fmt(st2, 0) : fmt(u2, 0) + (share ? " / " + fmt(st2, 0) : ""))),
+          k !== "save" && cb[sk] && h("div", { style: { fontSize: 11, color: "var(--muted)", marginBottom: 4, lineHeight: 1.6 } }, Object.entries(cb[sk]).sort((a, b) => b[1] - a[1]).map(([c, v]) => c + " " + fmt(v, 0)).join(" · ")),
+          k !== "save" && ex === sk && ib[sk] && h("div", { style: { background: "var(--bg2, rgba(0,0,0,.04))", borderRadius: 10, padding: 8, marginBottom: 6 } }, ib[sk].slice().sort((a, b) => b.amount - a.amount).map(it => h("div", { key: it.id, style: { padding: "6px 0", borderBottom: "1px solid var(--line)" } },
+            h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 800 } }, h("span", null, (it.ic || "") + " " + it.cat), h("span", null, fmt(it.amount, 0))),
+            h("div", { style: { fontSize: 10, color: "var(--muted)", margin: "2px 0 4px" } }, [it.date, it.note].filter(Boolean).join(" · ")),
+            h("select", { value: sk, style: { fontSize: 11 }, onChange: e => patch({ imap: { ...imap, [it.id]: e.target.value } }) }, allSubs.map(([k2, l2]) => h("option", { key: k2, value: k2 }, l2)))))),
           k !== "save" && share > 0 && h(Bar, { pct: st2 > 0 ? u2 / st2 * 100 : 0, color: u2 > st2 ? "var(--danger)" : B.c }));
-      })));
+      }), k === "save" && h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 4, lineHeight: 1.7 } }, savLog.filter(x => x.type === "in" && monthOf(x.date) === m).length ? savLog.filter(x => x.type === "in" && monthOf(x.date) === m).map(x => (x.note || x.name || "تحويش") + " " + fmt(x.amount, 0) + " (" + x.date + ")").join(" · ") : "الرقم ده من تاب التحويش (عمليات «دخول» الشهر ده) — لسه مفيش.")));
   };
   return h("div", { className: "card", style: { marginBottom: 10 } },
     h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 } },
@@ -683,7 +689,7 @@ function Rule503020({ doc, set, docKey, mItems, inc, m }) {
       h("div", { style: { display: "flex", gap: 6 } },
         h("button", { className: "chip", onClick: () => setSh("map") }, "🔗"),
         h("button", { className: "chip", onClick: () => { setF({ base: rule.base ? String(rule.base) : "", a: String(P[0]), b: String(P[1]), c: String(P[2]) }); setSh("cfg"); } }, "⚙️"))),
-    h("div", { style: { fontSize: 12, color: "var(--muted)", marginBottom: 12, lineHeight: 1.7 } }, base > 0 ? "الأساس: " + fmt(base, 0) + " ج — كل جنيه ليه مكان قبل ما تصرفه." : "سجّل المرتب كدخل أو حدّد الأساس من ⚙️ عشان التقسيم يشتغل."),
+    h("div", { style: { fontSize: 12, color: "var(--muted)", marginBottom: 12, lineHeight: 1.7 } }, base > 0 ? "الأساس: " + fmt(base, 0) + " ج — دوس على أي نسبة وبعدها على أي بند تشوف الحركات اللي اتحسبت فيه وتنقلها لبند تاني." : "سجّل المرتب كدخل أو حدّد الأساس من ⚙️ عشان التقسيم يشتغل."),
     base > 0 && [["need", 0], ["want", 1], ["save", 2]].map(([k, ix]) => block(k, ix)),
     sh === "cfg" && h(Sheet, { title: "تقسيم المرتب", onClose: () => setSh(null) },
       h(Field, { label: "المرتب الأساسي (اختياري)", hint: "لو سبته فاضي بياخد دخل الشهر المسجّل." }, h("input", { type: "number", inputMode: "decimal", value: f.base || "", onChange: e => setF(x => ({ ...x, base: e.target.value })) })),
@@ -979,7 +985,7 @@ const svcAddMo = (ds, k) => { const [y, m, d] = ds.split("-").map(Number); const
 const svcDays = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 864e5);
 function svcCalc(s, curOdo, perDay) {
   const td = todayStr();
-  const leftKm = s.km > 0 && s.lastKm > 0 && curOdo > 0 ? s.lastKm + s.km - curOdo : null;
+  const leftKm = s.dueKm > 0 && curOdo > 0 ? s.dueKm - curOdo : s.km > 0 && s.lastKm > 0 && curOdo > 0 ? s.lastKm + s.km - curOdo : null;
   let due = s.mo > 0 && s.lastDate ? svcAddMo(s.lastDate, s.mo) : null;
   if (leftKm != null && perDay > 0) { const pd = addDaysStr(td, Math.max(0, Math.round(leftKm / perDay))); if (!due || pd < due) due = pd; }
   const leftDays = due ? svcDays(td, due) : null;
@@ -998,8 +1004,9 @@ async function svcSchedule(items) {
     return true;
   } catch (e) { return false; }
 }
-function CarService({ doc, upd, curOdo, toast }) {
-  const svc = doc.svc || SVC_DEF.map(([id, ic, name, km, mo]) => ({ id, ic, name, km, mo, lastKm: 0, lastDate: "" }));
+function CarService({ doc, upd, curOdo, toast, dueItems }) {
+  const fromDue = d => ({ id: "e" + d.src, src: d.src, ic: d.ic, name: d.name, km: d.km, mo: 0, lastKm: d.lastKm, lastDate: d.lastDate, dueKm: d.dueKm });
+  const svc = doc.svc || (dueItems && dueItems.length ? dueItems.map(fromDue) : SVC_DEF.map(([id, ic, name, km, mo]) => ({ id, ic, name, km, mo, lastKm: 0, lastDate: "" })));
   const odo = doc.odo || {};
   const [ed, setEd] = useState(null); const [f, setF] = useState({}); const [open, setOpen] = useState(true);
   const perDay = useMemo(() => { const ks = Object.keys(odo).filter(k => Number(odo[k]) > 0).sort(); if (ks.length < 2) return 0; const a = ks[0], b = ks[ks.length - 1]; const d = svcDays(a + "-01", b + "-01"); return d > 0 ? (Number(odo[b]) - Number(odo[a])) / d : 0; }, [JSON.stringify(odo)]);
@@ -1007,11 +1014,13 @@ function CarService({ doc, upd, curOdo, toast }) {
   const key = JSON.stringify(calc.map(c => [c.id, c.due]));
   useEffect(() => { if (doc.notif) svcSchedule(calc); }, [key, doc.notif]);
   const setSvc = fn => upd(d => ({ ...d, svc: fn(d.svc || svc) }));
-  const done = id => { if (!(curOdo > 0)) return toast("سجّل قراءة العداد الأول."); setSvc(l => l.map(s => s.id === id ? { ...s, lastKm: curOdo, lastDate: todayStr() } : s)); toast("اتسجّل ✓"); };
+  const done = id => { if (!(curOdo > 0)) return toast("سجّل قراءة العداد الأول."); const c = calc.find(x => x.id === id); if (c && !(c.km > 0)) { setF({ name: c.name, km: "", mo: String(c.mo || ""), lastKm: String(curOdo), lastDate: todayStr(), dueKm: "" }); setEd(id); return toast("اكتب الميعاد الجاي بالكيلومتر."); } setSvc(l => l.map(s => s.id === id ? { ...s, lastKm: curOdo, lastDate: todayStr(), dueKm: 0 } : s)); toast("اتسجّل ✓"); };
+  const missing = (dueItems || []).filter(d => !svc.some(s => s.src === d.src));
+  const importDue = () => { setSvc(l => [...l, ...missing.map(fromDue)]); toast("اتضاف " + missing.length + " بند ✓"); };
   const msg = list => "🚗 تذكير صيانة العربية:\n" + list.map(c => "• " + c.name + (c.leftKm != null ? (c.leftKm <= 0 ? " — متأخر " + Math.abs(c.leftKm) + " كم" : " — باقي " + c.leftKm + " كم") : "") + (c.due ? " (" + c.due + ")" : "")).join("\n");
   const wa = list => { const n = String(doc.waNum || "").replace(/\D/g, ""); window.open("https://wa.me/" + n + "?text=" + encodeURIComponent(msg(list)), "_blank"); };
   const urgent = calc.filter(c => c.lv > 0);
-  const saveEd = () => { const km = num(f.km), mo = num(f.mo), lk = num(f.lastKm); setSvc(l => l.map(s => s.id === ed ? { ...s, name: f.name || s.name, km: km > 0 ? km : 0, mo: mo > 0 ? mo : 0, lastKm: lk > 0 ? lk : 0, lastDate: f.lastDate || "" } : s)); setEd(null); };
+  const saveEd = () => { const km = num(f.km), mo = num(f.mo), lk = num(f.lastKm); setSvc(l => l.map(s => s.id === ed ? { ...s, name: f.name || s.name, km: km > 0 ? km : 0, mo: mo > 0 ? mo : 0, lastKm: lk > 0 ? lk : 0, lastDate: f.lastDate || "", dueKm: num(f.dueKm) > 0 ? num(f.dueKm) : 0 } : s)); setEd(null); };
   const col = lv => lv === 2 ? "var(--danger)" : lv === 1 ? "var(--warn)" : "var(--ok)";
   return h("div", { className: "card", style: { marginBottom: 10 } },
     h("div", { onClick: () => setOpen(!open), style: { display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", marginBottom: open ? 10 : 0 } },
@@ -1027,7 +1036,8 @@ function CarService({ doc, upd, curOdo, toast }) {
           c.known && h("span", { style: { width: 10, height: 10, borderRadius: 99, background: col(c.lv), flexShrink: 0 } }),
           h("button", { onClick: () => done(c.id), className: "chip", style: { padding: "5px 9px", fontSize: 11 } }, "اتعمل ✓"),
           h("button", { onClick: () => wa([c]), style: { background: "none", border: "none", cursor: "pointer", fontSize: 16 }, "aria-label": "واتساب" }, "📲"),
-          h("button", { onClick: () => { setF({ name: c.name, km: String(c.km || ""), mo: String(c.mo || ""), lastKm: String(c.lastKm || ""), lastDate: c.lastDate || "" }); setEd(c.id); }, style: { background: "none", border: "none", cursor: "pointer", fontSize: 14 }, "aria-label": "تعديل" }, "✏️")))),
+          h("button", { onClick: () => { setF({ name: c.name, km: String(c.km || ""), mo: String(c.mo || ""), lastKm: String(c.lastKm || ""), lastDate: c.lastDate || "", dueKm: String(c.dueKm || "") }); setEd(c.id); }, style: { background: "none", border: "none", cursor: "pointer", fontSize: 14 }, "aria-label": "تعديل" }, "✏️")))),
+      missing.length > 0 && h("button", { className: "btn btn-ghost", style: { width: "100%", fontSize: 12, padding: 9, marginTop: 10 }, onClick: importDue }, "📥 استورد " + missing.length + " بند من المواعيد الجاية"),
       h("div", { style: { display: "flex", gap: 8, marginTop: 10 } },
         h("button", { className: "btn btn-ghost", style: { flex: 1, fontSize: 12, padding: 9 }, onClick: () => wa(urgent.length ? urgent : calc.filter(c => c.known)) }, "📲 ابعتلي على واتساب"),
         h("button", { className: "btn btn-ghost", style: { flex: 1, fontSize: 12, padding: 9 }, onClick: async () => { const ok = await svcSchedule(calc); upd(d => ({ ...d, notif: ok })); toast(ok ? "الإشعارات اتفعّلت ✓" : "الإشعارات شغالة في تطبيق الأندرويد بس."); } }, doc.notif ? "🔔 الإشعارات شغالة" : "🔔 فعّل الإشعارات")),
@@ -1037,6 +1047,7 @@ function CarService({ doc, upd, curOdo, toast }) {
       h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 } }, "المواعيد افتراضية، عدّلها حسب كتيّب عربيتك. الميعاد بيتحسب بالكيلومتر أو الشهور (الأقرب)، ومعدل مشيك اليومي من قراءات العداد.")),
     ed && h(Sheet, { title: "تعديل بند الصيانة", onClose: () => setEd(null) },
       h(Field, { label: "الاسم" }, h("input", { value: f.name || "", onChange: e => setF(x => ({ ...x, name: e.target.value })) })),
+      h(Field, { label: "🎯 الميعاد الجاي عند (كم) — اختياري", hint: "لو كتبته بيتحسب منه مباشرة." }, h("input", { type: "number", inputMode: "numeric", value: f.dueKm || "", onChange: e => setF(x => ({ ...x, dueKm: e.target.value })) })),
       h(Field, { label: "كل كام كم؟ (0 = مش بالكيلومتر)" }, h("input", { type: "number", inputMode: "numeric", value: f.km || "", onChange: e => setF(x => ({ ...x, km: e.target.value })) })),
       h(Field, { label: "كل كام شهر؟ (0 = مش بالشهور)" }, h("input", { type: "number", inputMode: "numeric", value: f.mo || "", onChange: e => setF(x => ({ ...x, mo: e.target.value })) })),
       h(Field, { label: "آخر مرة اتعملت عند (كم)" }, h("input", { type: "number", inputMode: "numeric", value: f.lastKm || "", onChange: e => setF(x => ({ ...x, lastKm: e.target.value })) })),
@@ -1108,7 +1119,7 @@ function CarModule({ prof }) {
       h("div", { key: "i", style: { display: "flex", gap: 8 } },
         h("input", { type: "number", inputMode: "numeric", placeholder: needsOdo ? "اكتب عداد الشهر ده..." : "تحديث العداد", value: odoIn, onChange: e => setOdoIn(e.target.value) }),
         h("button", { className: "btn btn-primary", style: { padding: "0 20px" }, onClick: saveOdo }, "حفظ"))]),
-    h(CarService, { doc, upd, curOdo, toast }),
+    h(CarService, { doc, upd, curOdo, toast, dueItems: all.filter(e => e.dueKm > 0).map(e => ({ src: e.id, ic: carCat(e.cat).ic, name: e.note || e.name || "صيانة", dueKm: e.dueKm, lastKm: e.km || 0, lastDate: e.date || "", km: e.km > 0 && e.dueKm > e.km ? e.dueKm - e.km : 0 })) }),
     lbl("🔔 المواعيد الجاية"),
     dueList.length === 0 ? box(h("div", { style: { fontSize: 12, color: "var(--muted)", lineHeight: 1.9 } }, "مفيش أي بند محدد له ميعاد جاي. لما تضيف صيانة، املا خانة «🎯 الميعاد الجاي عند (كم)» وهيظهر هنا تنبيه أوتوماتيك.")) :
       box(dueList.map((it, i) => {
