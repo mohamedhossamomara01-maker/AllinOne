@@ -26,7 +26,7 @@ const h = React.createElement;
 
 function start() {
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-const APP_VERSION = "v2026.11.24-b";
+const APP_VERSION = "v2026.11.25-a";
 if ("serviceWorker" in navigator && navigator.serviceWorker.controller) { let rl = false; navigator.serviceWorker.addEventListener("controllerchange", () => { if (rl) return; rl = true; location.reload(); }); }
 if ("serviceWorker" in navigator) { const reg = () => navigator.serviceWorker.register("./sw.js").catch(() => {}); if (document.readyState === "complete") reg(); else window.addEventListener("load", reg); }
 
@@ -633,6 +633,20 @@ function ReceiptScan({ docKey, icons, onSaved }) {
       draft.total > 0 && Math.abs(draft.total - sum) > Math.max(2, draft.total * .02) && h("div", { style: { fontSize: 12, color: "var(--warn, #d97706)", marginBottom: 8 } }, "إجمالي الفاتورة المكتوب " + fmt(draft.total) + " — راجع البنود لو في حاجة ناقصة."),
       h("button", { className: "btn btn-primary", style: { width: "100%", marginTop: 8 }, disabled: !draft.items.length, onClick: save }, "حفظ كمصروفات (" + draft.items.length + ")")));
 }
+// ── ترحيل باقي الشهر للشهر اللي بعده (تلقائي من CARRY_FROM، وتقدر تعدّله أو تلغيه) ──
+const CARRY_FROM = "2026-12";
+function CarryRow({ set, docKey, m, val, auto, cfg }) {
+  const [sh, setSh] = useState(false); const [v, setV] = useState("");
+  const put = x => { set(docKey, d => { const c = { ...((d && d.carry) || {}) }; if (x === undefined) delete c[m]; else c[m] = x; return { ...(d || { items: [], budget: 0 }), carry: c }; }); setSh(false); };
+  return h("div", { className: "card", style: { marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 } },
+    h("div", null, h("div", { style: { fontWeight: 900, fontSize: 13 } }, "↪️ مرحّل من الشهر اللي فات"), h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 2 } }, cfg === "off" ? "الترحيل متوقف للشهر ده" : typeof cfg === "number" ? "قيمة معدّلة يدويًا" : m >= CARRY_FROM ? "تلقائي من باقي الشهر السابق" : "مش مفعّل للشهر ده — تقدر تكتبه يدوي")),
+    h("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, h("b", { style: { fontSize: 14 } }, fmt(val, 0)), h("button", { className: "chip", onClick: () => { setV(val ? String(val) : ""); setSh(true); } }, "✏️")),
+    sh && h(Sheet, { title: "المرحّل من الشهر اللي فات", onClose: () => setSh(false) },
+      h(Field, { label: "المبلغ المرحّل (ممكن سالب لو عليك عجز)" }, h("input", { type: "number", inputMode: "decimal", value: v, onChange: e => setV(e.target.value) })),
+      h("button", { className: "btn btn-primary", style: { width: "100%", marginBottom: 8 }, onClick: () => put(Number(v) || 0) }, "حفظ القيمة"),
+      h("button", { className: "btn btn-ghost", style: { width: "100%", marginBottom: 8 }, onClick: () => put(undefined) }, "↩️ رجوع للتلقائي" + (m >= CARRY_FROM ? " (" + fmt(auto, 0) + ")" : "")),
+      h("button", { className: "btn btn-danger", style: { width: "100%" }, onClick: () => put("off") }, "🚫 بلاش ترحيل الشهر ده")));
+}
 // ══════════════════════════════════════════════════════════════
 // قاعدة 50 / 30 / 20 (أساسيات / خروجات / تحويش) — كل جنيه ليه مكان قبل ما تصرفه
 // ══════════════════════════════════════════════════════════════
@@ -650,7 +664,7 @@ function Rule503020({ doc, set, docKey, mItems, inc, m }) {
   const base = Number(rule.base) > 0 ? Number(rule.base) : inc;
   const imap = rule.imap || {};
   const subOf = i => imap[i.id] || map[i.cat] || (i.sec === "fix" || FIXED_NAMES.has(i.cat) ? (i.cat === "الإنترنت" ? "n_bills" : "n_house") : i.sec === "car" ? "n_trans" : RULE_DEF[i.cat] || (RCPT_CATS.some(c => c[1] === i.cat) ? "n_food" : "w_other"));
-  const list = mItems.filter(i => i.type !== "inc" && !i.ext && i.sec !== "ride");
+  const list = mItems.filter(i => i.type !== "inc" && !i.ext && i.sec !== "ride" && !String(i.id).startsWith("auto_carry"));
   const sp = {}, cb = {}, ib = {}; list.forEach(i => { const k = subOf(i); (ib[k] = ib[k] || []).push(i); sp[k] = (sp[k] || 0) + i.amount; cb[k] = cb[k] || {}; cb[k][i.cat] = (cb[k][i.cat] || 0) + i.amount; });
   const savedNow = sumBy(savLog.filter(x => x.type === "in" && monthOf(x.date) === m));
   const patch = p => set(docKey, d => ({ ...(d || { items: [], budget: 0 }), rule: { ...((d && d.rule) || {}), ...p } }));
@@ -724,8 +738,14 @@ function ExpensesModule({ docKey, who, ride }) {
   const ctx = { main, ride, items, car: carDoc, loans: loansDoc, fixed: fixedDoc };
   const baseItems = useMemo(() => items.filter(i => monthOf(i.date) === m), [items, m]);
   const autoItems = main ? autoItemsFor(m, ctx, baseItems) : [];
+  const carryMap = doc.carry || {};
+  const carryRes = (k, a) => { const c = carryMap[k]; return c === "off" ? 0 : typeof c === "number" ? c : (k >= CARRY_FROM ? a : 0); };
+  let carryAuto = 0;
+  if (main && m > "2026-11") { let close = 0, first = true; for (let k = "2026-11", g = 0; k < m && g < 60; k = addMonths(k, 1), g++) { const o = itemsOfMonth(k, ctx).all.filter(i => !i.ext); const net = o.filter(i => i.type === "inc").reduce((a, i) => a + i.amount, 0) - o.filter(i => i.type !== "inc").reduce((a, i) => a + i.amount, 0); close = carryRes(k, first ? 0 : close) + net; first = false; } carryAuto = close; }
+  const carryVal = main ? carryRes(m, carryAuto) : 0;
+  const carryItem = main && carryVal !== 0 ? [{ id: "auto_carry_" + m, auto: true, type: carryVal > 0 ? "inc" : "exp", amount: Math.abs(carryVal), cat: carryVal > 0 ? "باقي الشهر اللي فات" : "عجز الشهر اللي فات", ic: "↪️", note: "مرحّل", date: m + "-01" }] : [];
   const [fixSheet, setFixSheet] = useState(false);
-  const mItems = baseItems.concat(autoItems);
+  const mItems = baseItems.concat(autoItems).concat(carryItem);
   const cnt = mItems.filter(i => !i.ext);
   const inc = cnt.filter(i => i.type === "inc").reduce((s, i) => s + i.amount, 0);
   const exp = cnt.filter(i => i.type !== "inc").reduce((s, i) => s + i.amount, 0);
@@ -773,7 +793,8 @@ function ExpensesModule({ docKey, who, ride }) {
             h("div", { style: { fontSize: 12, color: "var(--muted)", marginTop: 8 } }, exp > budget ? "تعدّيت الميزانية بـ " + fmt(exp - budget, 0) : "فاضل " + fmt(budget - exp, 0) + " من الميزانية"))
         : h("div", { style: { fontSize: 13, color: "var(--muted)" } }, "لسه ماحدّدتش ميزانية للشهر."),
       h("button", { className: "btn btn-ghost", style: { width: "100%", marginTop: 10, padding: "9px" }, onClick: () => { setBud(budget ? String(budget) : ""); setSheet("budget"); } }, budget ? "تعديل الميزانية" : "حدّد ميزانية")),
-    main && h(Rule503020, { doc, set, docKey, mItems, inc, m }),
+    main && h(CarryRow, { set, docKey, m, val: carryVal, auto: carryAuto, cfg: carryMap[m] }),
+    main && h(Rule503020, { doc, set, docKey, mItems, inc: inc - (carryVal > 0 ? carryVal : 0), m }),
     h("div", { className: "card", style: { marginBottom: 10 } },
       h("div", { style: { fontWeight: 900, fontSize: 14, marginBottom: 10 } }, "🎯 ميزانيات الأقسام"),
       Object.keys(cbs).length === 0
@@ -1532,11 +1553,13 @@ function PeriodTracker({ docKey }) {
   const log = ((get(docKey, { log: [] }) || {}).log || []).slice().sort((a, b) => a.start.localeCompare(b.start));
   const setLog = fn => set(docKey, d => ({ log: fn(((d && d.log) || []).slice().sort((a, b) => a.start.localeCompare(b.start))) }));
   const today = todayStr();
-  const [backdate, setBackdate] = useState(today);
+  const [backdate, setBackdate] = useState(today); const [endDay, setEndDay] = useState(today); const [ed, setEd] = useState(null);
   const openCycle = log.length > 0 && !log[log.length - 1].end ? log[log.length - 1] : null;
   const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
   const startOn = ds => { if (!openCycle && ds) setLog(l => [...l, { id: uid8(), start: ds, end: null }].sort((a, b) => a.start.localeCompare(b.start))); };
   const endCurrent = () => { if (openCycle) setLog(l => l.map((c, i) => i === l.length - 1 ? { ...c, end: today } : c)); };
+  const endOn = ds => { if (!openCycle) return; if (!ds || ds < openCycle.start || ds > today) return alert("اختاري تاريخ بين يوم البداية والنهاردة."); setLog(l => l.map((c, i) => i === l.length - 1 ? { ...c, end: ds } : c)); };
+  const saveEd = () => { if (!ed.start || ed.start > today || (ed.end && (ed.end < ed.start || ed.end > today))) return alert("راجعي التواريخ: النهاية بعد البداية ومش بعد النهاردة."); setLog(l => l.map(c => c.id === ed.id ? { ...c, start: ed.start, end: ed.end || null } : c).sort((a, b) => a.start.localeCompare(b.start))); setEd(null); };
   const delCycle = id => { if (confirmDo("تمسح الدورة دي من السجل؟")) setLog(l => l.filter(c => c.id !== id)); };
   const lens = log.map((c, i) => i > 0 ? daysBetween(log[i - 1].start, c.start) : null).filter(x => x);
   const avg = lens.length ? Math.round(lens.reduce((s, x) => s + x, 0) / lens.length) : null;
@@ -1547,7 +1570,9 @@ function PeriodTracker({ docKey }) {
     h("div", { className: "card" },
       openCycle
         ? h("div", null, h("div", { style: { fontSize: 13, marginBottom: 10 } }, "بدأت يوم ", h("b", null, openCycle.start), " (النهاردة اليوم رقم " + (daysBetween(openCycle.start, today) + 1) + ")"),
-            h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: endCurrent }, "✅ خلصت النهاردة"))
+            h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: endCurrent }, "✅ خلصت النهاردة"),
+            h("div", { style: { fontSize: 12, color: "var(--muted)", margin: "12px 0 6px" } }, "أو نسيتي تسجلي النهاية؟ اختاري اليوم اللي خلصت فيه:"),
+            h("div", { style: { display: "flex", gap: 8 } }, h("input", { type: "date", value: endDay, min: openCycle.start, max: today, onChange: e => setEndDay(e.target.value) }), h("button", { className: "btn btn-ghost", style: { padding: "0 18px" }, onClick: () => endOn(endDay) }, "تسجيل")))
         : h("div", null,
             h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: () => startOn(today) }, "🔴 بدأت النهاردة"),
             h("div", { style: { fontSize: 12, color: "var(--muted)", margin: "12px 0 6px" } }, "أو نسيتي تسجليها؟ اختاري اليوم اللي بدأت فيه:"),
@@ -1559,8 +1584,13 @@ function PeriodTracker({ docKey }) {
         const cl = prev ? daysBetween(prev.start, c.start) : null; const dur = c.end ? daysBetween(c.start, c.end) + 1 : null;
         return h("div", { key: c.id, style: { display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 0", borderTop: i ? "1px solid var(--line)" : "none" } },
           h("div", { style: { flex: 1, fontSize: 12, lineHeight: 1.8 } }, "بدأت " + c.start + (c.end ? " — انتهت " + c.end + " (" + dur + " يوم)" : " (مستمرة)"), cl != null && h("div", { style: { color: "var(--muted)", fontSize: 11 } }, "المسافة من الدورة اللي فاتت: " + cl + " يوم")),
+          h("button", { onClick: () => setEd({ id: c.id, start: c.start, end: c.end || "" }), style: { background: "none", border: "none", cursor: "pointer", fontSize: 14 }, "aria-label": "تعديل" }, "✏️"),
           h("button", { onClick: () => delCycle(c.id), style: { background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 16 }, "aria-label": "مسح" }, "×"));
-      })));
+      })),
+    ed && h(Sheet, { title: "تعديل الدورة", onClose: () => setEd(null) },
+      h(Field, { label: "يوم البداية" }, h("input", { type: "date", value: ed.start, max: today, onChange: e => setEd(x => ({ ...x, start: e.target.value })) })),
+      h(Field, { label: "يوم النهاية (سيبيه فاضي لو لسه مستمرة)" }, h("input", { type: "date", value: ed.end, max: today, onChange: e => setEd(x => ({ ...x, end: e.target.value })) })),
+      h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: saveEd }, "حفظ")));
 }
 
 // ميزانية فرد من العائلة (+ متابعة الدورة لو الفرد بنت)
