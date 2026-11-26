@@ -26,7 +26,7 @@ const h = React.createElement;
 
 function start() {
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-const APP_VERSION = "v2026.11.26-a";
+const APP_VERSION = "v2026.11.26-b";
 if ("serviceWorker" in navigator && navigator.serviceWorker.controller) { let rl = false; navigator.serviceWorker.addEventListener("controllerchange", () => { if (rl) return; rl = true; location.reload(); }); }
 if ("serviceWorker" in navigator) { const reg = () => navigator.serviceWorker.register("./sw.js").catch(() => {}); if (document.readyState === "complete") reg(); else window.addEventListener("load", reg); }
 
@@ -474,6 +474,13 @@ function SavingsTab({ docKey }) {
       h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: save }, "حفظ")));
 }
 
+// الالتزام بيبدأ من شهر إضافته (القديم قبل 2026-12 بيبدأ من الشهر اللي بعده زي ما كان)
+const fixedStart = f => !f.from ? "9999-99" : f.from >= "2026-12" ? f.from : addMonths(f.from, 1);
+// قيمة الالتزام في شهر معيّن: الشهور القديمة بتاخد القيمة المحفوظة قبل التعديل
+const fixedAt = (f, m) => { if (m < fixedStart(f) || (f.to && m > f.to)) return null; return (f.past || []).filter(p => m <= p.until).sort((a, b) => a.until.localeCompare(b.until))[0] || f; };
+// ── منع تكرار الأصناف: توحيد الهمزات والتاء المربوطة و«ال» وكلمات محل/مطعم/مصنع ──
+const catKey = s => { let w = String(s || "").toLowerCase().replace(/[\u064B-\u065F\u0670\u0640]/g, "").replace(/[أإآ]/g, "ا").replace(/ى/g, "ي").replace(/ة/g, "ه").split(/[^0-9a-z\u0621-\u064A\u0660-\u0669]+/).filter(Boolean).map(x => x.length > 3 && x.startsWith("ال") ? x.slice(2) : x); const core = w.filter(x => !["محل", "مطعم", "مصنع"].includes(x)); if (core.length) w = core; return w.filter((x, i) => !(x === "باي" && w[i - 1] === "انستا")).join(" ") || String(s || "").trim(); };
+const sameCat = (name, list) => list.find(n => catKey(n) === catKey(name));
 const FIXED_NAMES = new Set(["قسط العربية", "قسط الشقة / الإيجار", "الإنترنت", "الصدقات", "أمي", "ضحي — مصروف البيت"]);
 function autoItemsFor(m, ctx, base) {
   const out = [], dt = payDate(m);
@@ -490,9 +497,9 @@ function autoItemsFor(m, ctx, base) {
     if (pay > 0) out.push({ id: "auto_loan_" + l.id, auto: true, sec: "fix", type: "exp", amount: pay, cat: l.cat || l.name, ic: l.icon || "💳", note: "قسط تلقائي — المتبقي بعده " + fmt(Math.max(0, before - pay), 0), date: dt });
   });
   ((ctx.fixed.items) || []).forEach(f => {
-    if (!(m > (f.from || "9999-99"))) return;
-    if (base.some(i => i.cat === f.cat && i.type !== "inc")) return;
-    out.push({ id: "auto_fx_" + f.id, auto: true, sec: "fix", type: "exp", amount: Number(f.amount) || 0, cat: f.cat, ic: f.icon || "📌", note: "التزام ثابت — بيتخصم تلقائي", date: dt });
+    const v = fixedAt(f, m); if (!v) return;
+    if (base.some(i => i.cat === v.cat && i.type !== "inc")) return;
+    out.push({ id: "auto_fx_" + f.id, auto: true, sec: "fix", type: "exp", amount: Number(v.amount) || 0, cat: v.cat, ic: f.icon || "📌", note: "التزام ثابت — بيتخصم تلقائي", date: dt });
   });
   ((ctx.car.entries) || []).filter(e => monthOf(e.date) === m && e.amount > 0).forEach(e => {
     const c = carCat(e.cat), ext = e.paidBy === "tahwish" ? "tahwish" : e.paidBy === "doha" ? "doha" : null;
@@ -503,7 +510,7 @@ function autoItemsFor(m, ctx, base) {
 const itemsOfMonth = (m, ctx) => { const base = ctx.items.filter(i => monthOf(i.date) === m); return { base, all: base.concat(ctx.main ? autoItemsFor(m, ctx, base) : []) }; };
 const totalsOf = list => { const c = list.filter(i => !i.ext); return { inc: sumBy(c.filter(i => i.type === "inc")), exp: sumBy(c.filter(i => i.type !== "inc")) }; };
 
-function MonthsSummary({ ctx, history }) {
+function MonthsSummary({ ctx, history, carry }) {
   const cur = monthOf(todayStr());
   const hist = (history && history.months) || {};
   const upTo = history && history.upTo;
@@ -511,14 +518,15 @@ function MonthsSummary({ ctx, history }) {
   Object.keys(hist).sort().forEach(k => keys.push(k));
   let start = upTo ? addMonths(upTo, 1) : (ctx.items.length ? ctx.items.map(i => monthOf(i.date)).sort()[0] : cur);
   for (let k = start, n = 0; k <= cur && n < 240; k = addMonths(k, 1), n++) keys.push(k);
-  const rows = keys.map(k => { const t = hist[k] && k <= (upTo || "") ? hist[k] : totalsOf(itemsOfMonth(k, ctx).all); return { k, inc: t.inc, exp: t.exp }; });
+  const rows = keys.map(k => { const old = hist[k] && k <= (upTo || ""); const t = old ? hist[k] : totalsOf(itemsOfMonth(k, ctx).all); const c = old ? 0 : carryFor(k, carry || {}, ctx).val; return { k, c, inc: t.inc + Math.max(c, 0), exp: t.exp + Math.max(-c, 0) }; });
   const adjI = (history && history.adjInc) || 0, adjE = (history && history.adjExp) || 0;
-  const totI = sumBy(rows, r => r.inc) + adjI, totE = sumBy(rows, r => r.exp) + adjE;
+  const totI = sumBy(rows, r => r.inc - Math.max(r.c, 0)) + adjI, totE = sumBy(rows, r => r.exp - Math.max(-r.c, 0)) + adjE; // المرحّل ما يتحسبش مرتين في الإجمالي
   return h("div", { style: { marginTop: 14 } },
     h("div", { style: { fontWeight: 900, fontSize: 14, margin: "0 2px 8px" } }, "📅 ملخص الشهور"),
     h("div", { className: "card", style: { padding: "4px 14px" } }, rows.map((r, i) => { const net = r.inc - r.exp; return h("div", { key: r.k, style: { padding: "11px 0", borderTop: i ? "1px solid var(--line)" : "none" } },
       h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } }, h("span", { style: { fontWeight: 900, fontSize: 13, color: r.k === cur ? "var(--accent)" : "var(--text)" } }, (r.k === cur ? "▶ " : "") + monthLabel(r.k)), h("span", { style: { fontWeight: 900, direction: "ltr", color: net >= 0 ? "var(--ok)" : "var(--danger)" } }, (net >= 0 ? "+" : "−") + fmt(Math.abs(net), 1))),
       h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", margin: "4px 0 6px" } }, h("span", null, "دخل: " + fmt(r.inc, 1)), h("span", null, "مصاريف: " + fmt(r.exp, 1))),
+      r.c !== 0 && h("div", { style: { fontSize: 11, color: "var(--muted)", marginBottom: 6 } }, "↪️ منهم مرحّل " + (r.c > 0 ? "في الدخل " : "في المصاريف ") + fmt(Math.abs(r.c), 1)),
       h(Bar, { pct: r.inc > 0 ? Math.min(100, r.exp / r.inc * 100) : 100, color: r.exp > r.inc ? "var(--danger)" : "var(--warn)" })); })),
     h("div", { className: "card", style: { marginTop: 10 } },
       h("div", { style: { display: "flex", justifyContent: "space-between", padding: "4px 0" } }, h("span", { style: { color: "var(--muted)", fontSize: 13 } }, "إجمالي الدخل كل الشهور"), h("span", { style: { fontWeight: 900, color: "var(--ok)" } }, fmt(totI, 0) + " ج")),
@@ -530,16 +538,22 @@ function FixedSheet({ onClose }) {
   const items = (get("fixed", { items: [] }).items) || [];
   const [n, setN] = useState(""); const [a, setA] = useState("");
   const upd = fn => set("fixed", d => ({ ...(d || {}), items: fn((d && d.items) || []) }));
+  const cur = monthOf(todayStr()), prev = addMonths(cur, -1);
+  const live = items.filter(f => !f.to || f.to >= cur);
+  // قبل أي تعديل بنحفظ القيمة القديمة للشهور اللي فاتت
+  const keep = x => !fixedAt(x, prev) || (x.past || []).some(p => p.until === prev) ? x : { ...x, past: [...(x.past || []), { until: prev, amount: x.amount, cat: x.cat }] };
+  const edit = (id, p) => upd(l => l.map(x => x.id === id ? { ...keep(x), ...p } : x));
+  const remove = id => upd(l => l.flatMap(x => x.id !== id ? [x] : fixedStart(x) <= prev ? [{ ...keep(x), to: prev }] : []));
   return h(Sheet, { title: "الالتزامات الثابتة (بتتخصم يوم " + (START_DAY > 1 ? START_DAY : 1) + ")", onClose },
-    items.length === 0 && h("div", { style: { fontSize: 13, color: "var(--muted)", marginBottom: 10 } }, "مفيش التزامات ثابتة لسه."),
-    items.map(f => h("div", { key: f.id, style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 8 } },
-      h("input", { value: f.cat, onChange: e => upd(l => l.map(x => x.id === f.id ? { ...x, cat: e.target.value, name: e.target.value } : x)), style: { flex: 2, marginBottom: 0 } }),
-      h("input", { type: "number", inputMode: "decimal", value: f.amount, onChange: e => upd(l => l.map(x => x.id === f.id ? { ...x, amount: e.target.value === "" ? "" : Number(e.target.value) } : x)), style: { flex: 1, marginBottom: 0 } }),
-      h("button", { onClick: () => { if (confirmDo("تمسح الالتزام ده؟")) upd(l => l.filter(x => x.id !== f.id)); }, style: { background: "none", border: "none", color: "var(--danger)", fontSize: 16, cursor: "pointer" } }, "🗑"))),
+    live.length === 0 && h("div", { style: { fontSize: 13, color: "var(--muted)", marginBottom: 10 } }, "مفيش التزامات ثابتة لسه."),
+    live.map(f => h("div", { key: f.id, style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 8 } },
+      h("input", { value: f.cat, onChange: e => edit(f.id, { cat: e.target.value, name: e.target.value }), style: { flex: 2, marginBottom: 0 } }),
+      h("input", { type: "number", inputMode: "decimal", value: f.amount, onChange: e => edit(f.id, { amount: e.target.value === "" ? "" : Number(e.target.value) }), style: { flex: 1, marginBottom: 0 } }),
+      h("button", { onClick: () => { if (confirmDo("تمسح الالتزام ده؟")) remove(f.id); }, style: { background: "none", border: "none", color: "var(--danger)", fontSize: 16, cursor: "pointer" } }, "🗑"))),
     h("div", { style: { fontWeight: 800, fontSize: 13, margin: "12px 0 6px" } }, "التزام جديد"),
     h("div", { style: { display: "flex", gap: 8 } }, h("input", { value: n, onChange: e => setN(e.target.value), placeholder: "الاسم", style: { flex: 2, marginBottom: 0 } }), h("input", { type: "number", inputMode: "decimal", value: a, onChange: e => setA(e.target.value), placeholder: "المبلغ", style: { flex: 1, marginBottom: 0 } })),
-    h("button", { className: "btn btn-primary", style: { width: "100%", marginTop: 10 }, onClick: () => { const v = num(a); if (!n.trim() || !(v > 0)) return alert("اكتب الاسم والمبلغ."); upd(l => [...l, { id: uid8(), cat: n.trim(), name: n.trim(), icon: "📌", amount: v, from: monthOf(todayStr()) }]); setN(""); setA(""); } }, "إضافة"),
-    h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 } }, "التغيير بيسري من الشهر الجاي. الشهور اللي فاتت ما بتتغيّرش."));
+    h("button", { className: "btn btn-primary", style: { width: "100%", marginTop: 10 }, onClick: () => { const v = num(a); if (!n.trim() || !(v > 0)) return alert("اكتب الاسم والمبلغ."); const dup = sameCat(n, live.map(f => f.cat)); if (dup) return alert("الالتزام ده موجود قبل كده باسم «" + dup + "». عدّل المبلغ بتاعه بدل ما تضيفه تاني."); upd(l => [...l, { id: uid8(), cat: n.trim(), name: n.trim(), icon: "📌", amount: v, from: monthOf(todayStr()) }]); setN(""); setA(""); } }, "إضافة"),
+    h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 } }, "التغيير بيسري من الشهر الحالي. الشهور اللي فاتت ما بتتغيّرش."));
 }
 
 // ── قراءة الفاتورة من الصورة (Google Gemini — مفتاح مجاني بيتخزن على موبايلك بس) ──
@@ -635,6 +649,12 @@ function ReceiptScan({ docKey, icons, onSaved }) {
 }
 // ── ترحيل باقي الشهر للشهر اللي بعده (تلقائي من CARRY_FROM، وتقدر تعدّله أو تلغيه) ──
 const CARRY_FROM = "2026-12";
+function carryFor(m, map, ctx) {
+  const res = (k, a) => { const c = map[k]; return c === "off" ? 0 : typeof c === "number" ? c : (k >= CARRY_FROM ? a : 0); };
+  let auto = 0;
+  if (ctx.main && m > "2026-11") { let close = 0, first = true; for (let k = "2026-11", g = 0; k < m && g < 60; k = addMonths(k, 1), g++) { const t = totalsOf(itemsOfMonth(k, ctx).all); close = res(k, first ? 0 : close) + t.inc - t.exp; first = false; } auto = close; }
+  return { auto, val: ctx.main ? res(m, auto) : 0 };
+}
 function CarryRow({ set, docKey, m, val, auto, cfg }) {
   const [sh, setSh] = useState(false); const [v, setV] = useState("");
   const put = x => { set(docKey, d => { const c = { ...((d && d.carry) || {}) }; if (x === undefined) delete c[m]; else c[m] = x; return { ...(d || { items: [], budget: 0 }), carry: c }; }); setSh(false); };
@@ -739,10 +759,7 @@ function ExpensesModule({ docKey, who, ride }) {
   const baseItems = useMemo(() => items.filter(i => monthOf(i.date) === m), [items, m]);
   const autoItems = main ? autoItemsFor(m, ctx, baseItems) : [];
   const carryMap = doc.carry || {};
-  const carryRes = (k, a) => { const c = carryMap[k]; return c === "off" ? 0 : typeof c === "number" ? c : (k >= CARRY_FROM ? a : 0); };
-  let carryAuto = 0;
-  if (main && m > "2026-11") { let close = 0, first = true; for (let k = "2026-11", g = 0; k < m && g < 60; k = addMonths(k, 1), g++) { const o = itemsOfMonth(k, ctx).all.filter(i => !i.ext); const net = o.filter(i => i.type === "inc").reduce((a, i) => a + i.amount, 0) - o.filter(i => i.type !== "inc").reduce((a, i) => a + i.amount, 0); close = carryRes(k, first ? 0 : close) + net; first = false; } carryAuto = close; }
-  const carryVal = main ? carryRes(m, carryAuto) : 0;
+  const { auto: carryAuto, val: carryVal } = carryFor(m, carryMap, ctx);
   const carryItem = main && carryVal !== 0 ? [{ id: "auto_carry_" + m, auto: true, type: carryVal > 0 ? "inc" : "exp", amount: Math.abs(carryVal), cat: carryVal > 0 ? "باقي الشهر اللي فات" : "عجز الشهر اللي فات", ic: "↪️", note: "مرحّل", date: m + "-01" }] : [];
   const [fixSheet, setFixSheet] = useState(false);
   const mItems = baseItems.concat(autoItems).concat(carryItem);
@@ -753,8 +770,8 @@ function ExpensesModule({ docKey, who, ride }) {
   const byDay = useMemo(() => { const o = {}; mItems.forEach(i => { (o[i.date] = o[i.date] || []).push(i); }); return Object.entries(o).sort((a, b) => b[0].localeCompare(a[0])); }, [mItems]);
   const budget = Number(doc.budget) || 0;
   const icons = useMemo(() => { const o = {}; items.forEach(i => { if (i.ic && !o[i.cat]) o[i.cat] = i.ic; }); return o; }, [items]);
-  const extraCats = useMemo(() => { const base = new Set(EXP_CATS.concat(INC_CATS).map(c => c[1])); const cnt = {}, last = {}; items.forEach(i => { if (!base.has(i.cat)) { const k = (i.type === "inc" ? "i|" : "e|") + i.cat; cnt[k] = (cnt[k] || 0) + 1; if (!last[k] || (i.date || "") > last[k]) last[k] = i.date || ""; } }); const cut = addDaysStr(todayStr(), -45); return Object.entries(cnt).sort((x, y) => ((last[y[0]] >= cut) - (last[x[0]] >= cut)) || (y[1] - x[1])).slice(0, 60).map(([k]) => [k.slice(0, 1) === "i" ? "inc" : "exp", k.slice(2)]); }, [items]);
-  const addCat = () => { const n = (window.prompt("اسم التصنيف الجديد؟") || "").trim().slice(0, 30); if (n) setCat(n); };
+  const extraCats = useMemo(() => { const base = new Set(EXP_CATS.concat(INC_CATS).map(c => c[1])); const cnt = {}, last = {}; items.forEach(i => { if (!base.has(i.cat)) { const k = (i.type === "inc" ? "i|" : "e|") + i.cat; cnt[k] = (cnt[k] || 0) + 1; if (!last[k] || (i.date || "") > last[k]) last[k] = i.date || ""; } }); const cut = addDaysStr(todayStr(), -45); const seen = new Set(EXP_CATS.map(c => "e|" + catKey(c[1])).concat(INC_CATS.map(c => "i|" + catKey(c[1])))); return Object.entries(cnt).sort((x, y) => ((last[y[0]] >= cut) - (last[x[0]] >= cut)) || (y[1] - x[1])).filter(([k]) => { const u = k.slice(0, 2) + catKey(k.slice(2)); if (seen.has(u)) return false; seen.add(u); return true; }).slice(0, 60).map(([k]) => [k.slice(0, 1) === "i" ? "inc" : "exp", k.slice(2)]); }, [items]);
+  const addCat = () => { const n = (window.prompt("اسم التصنيف الجديد؟") || "").trim().slice(0, 30); if (!n) return; const all = (type === "inc" ? INC_CATS : EXP_CATS).map(c => c[1]).concat(extraCats.filter(x => x[0] === type).map(x => x[1]), items.filter(i => i.type === type).map(i => i.cat)); const dup = sameCat(n, all); if (dup) { alert("الصنف ده موجود قبل كده باسم «" + dup + "»، واخترتهولك."); return setCat(sameCat(n, (type === "inc" ? INC_CATS : EXP_CATS).map(c => c[1]).concat(extraCats.filter(x => x[0] === type).map(x => x[1]))) || dup); } setCat(n); };
   const openAdd = t => { setPayer("me"); setType(t); setAmount(""); setNote(""); setDate(todayStr()); setCat((t === "inc" ? INC_CATS : EXP_CATS)[0][1]); setSheet("add"); };
   const save = () => {
     const a = num(amount);
@@ -811,11 +828,11 @@ function ExpensesModule({ docKey, who, ride }) {
     h(ReceiptScan, { docKey, icons, onSaved: (dt, n) => { setM(monthOf(dt)); toast("اتسجّل " + n + " بند من الفاتورة ✓"); } }),
     byCat.length > 0 && h("div", { className: "card", style: { marginBottom: 10 } },
       h("div", { style: { fontWeight: 900, fontSize: 14, marginBottom: 10 } }, "المصروف حسب النوع"),
-      byCat.map(([c, v]) => h("div", { key: c, style: { marginBottom: 9 } },
+      Object.values(byCat.reduce((o, [c, v]) => { const k = catKey(c); if (o[k]) o[k][1] += v; else o[k] = [c, v]; return o; }, {})).sort((a, b) => b[1] - a[1]).map(([c, v]) => h("div", { key: c, style: { marginBottom: 9 } },
         h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 } }, h("span", null, (icons[c] || catIcon(c, "exp")) + " " + c), h("span", { style: { color: "var(--muted)" } }, fmt(v, 0) + " • " + Math.round(v / exp * 100) + "%")),
         h(Bar, { pct: v / exp * 100 })))),
     (() => {
-      const fixedCats = new Set(((fixedDoc.items) || []).map(f => f.cat));
+      const fixedCats = new Set(((fixedDoc.items) || []).flatMap(f => [f.cat].concat((f.past || []).map(p => p.cat))));
       const secOf = i => i.sec || (i.type === "inc" ? "sal" : (FIXED_NAMES.has(i.cat) || fixedCats.has(i.cat)) ? "fix" : "gen");
       const row = (i, idx) => h("div", { key: i.id, style: { display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 0", borderTop: idx ? "1px solid var(--line)" : "none" } },
         h("span", { style: { fontSize: 20, marginTop: 2 } }, catIcon(i.cat, i.type, i.ic || icons[i.cat])),
@@ -835,7 +852,7 @@ function ExpensesModule({ docKey, who, ride }) {
           k === "fix" && h("button", { className: "btn btn-ghost", style: { width: "100%", marginTop: 8, fontSize: 13 }, onClick: () => setFixSheet(true) }, "⚙️ إدارة الالتزامات الثابتة"));
       });
     })(),
-    main && h(MonthsSummary, { ctx, history: histDoc }),
+    main && h(MonthsSummary, { ctx, history: histDoc, carry: carryMap }),
     fixSheet && h(FixedSheet, { onClose: () => setFixSheet(false) }),
     sheet === "add" && h(Sheet, { title: type === "inc" ? "إضافة دخل" : "إضافة مصروف", onClose: () => setSheet(null) },
       h("div", { style: { display: "flex", gap: 8, marginBottom: 12 } }, [["exp", "مصروف"], ["inc", "دخل"]].map(([k, l]) => h("button", { key: k, className: "chip" + (type === k ? " on" : ""), style: { flex: 1, padding: 9 }, onClick: () => { setType(k); setCat((k === "inc" ? INC_CATS : EXP_CATS)[0][1]); } }, l))),
@@ -1548,6 +1565,8 @@ function WeightModule({ prof }) {
 // ══════════════════════════════════════════════════════════════
 // متابعة الدورة (للبنات، أو لفرد بنت في ميزانية العائلة)
 // ══════════════════════════════════════════════════════════════
+const daysWord = n => n === 1 ? "يوم واحد" : n === 2 ? "يومين" : n + (n <= 10 ? " أيام" : " يوم");
+const leftText = n => n === 0 ? "متوقعة النهارده" : n > 0 ? "⏳ المتبقي " + daysWord(n) : "متأخرة " + daysWord(-n);
 function PeriodTracker({ docKey }) {
   const { get, set } = useData();
   const log = ((get(docKey, { log: [] }) || {}).log || []).slice().sort((a, b) => a.start.localeCompare(b.start));
@@ -1566,7 +1585,7 @@ function PeriodTracker({ docKey }) {
   const next = avg && log.length ? (() => { const d = new Date(log[log.length - 1].start + "T00:00:00"); d.setDate(d.getDate() + avg); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); })() : null;
   return h("div", { className: "fade" },
     h("div", { style: { fontWeight: 900, fontSize: 15, marginBottom: 10 } }, "🩸 متابعة الدورة"),
-    avg && h("div", { style: { display: "flex", gap: 8, marginBottom: 10 } }, h(Stat, { label: "متوسط المسافة بين الدورات", value: avg + " يوم" }), h(Stat, { label: "الدورة الجاية تقريبًا", value: next ? dayLabel(next).split(" ").slice(0, 3).join(" ") : "—", sub: next })),
+    avg && h("div", { style: { display: "flex", gap: 8, marginBottom: 10 } }, h(Stat, { label: "متوسط المسافة بين الدورات", value: avg + " يوم" }), h(Stat, { label: "الدورة الجاية تقريبًا", value: next ? dayLabel(next).split(" ").slice(0, 3).join(" ") : "—", sub: next ? h("span", null, next, h("b", { style: { display: "block", fontSize: 14, color: "var(--accent)", marginTop: 4 } }, leftText(daysBetween(today, next)))) : null })),
     h("div", { className: "card" },
       openCycle
         ? h("div", null, h("div", { style: { fontSize: 13, marginBottom: 10 } }, "بدأت يوم ", h("b", null, openCycle.start), " (النهاردة اليوم رقم " + (daysBetween(openCycle.start, today) + 1) + ")"),
