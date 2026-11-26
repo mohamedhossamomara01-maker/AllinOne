@@ -26,7 +26,7 @@ const h = React.createElement;
 
 function start() {
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-const APP_VERSION = "v2026.11.25-a";
+const APP_VERSION = "v2026.11.26-a";
 if ("serviceWorker" in navigator && navigator.serviceWorker.controller) { let rl = false; navigator.serviceWorker.addEventListener("controllerchange", () => { if (rl) return; rl = true; location.reload(); }); }
 if ("serviceWorker" in navigator) { const reg = () => navigator.serviceWorker.register("./sw.js").catch(() => {}); if (document.readyState === "complete") reg(); else window.addEventListener("load", reg); }
 
@@ -753,7 +753,7 @@ function ExpensesModule({ docKey, who, ride }) {
   const byDay = useMemo(() => { const o = {}; mItems.forEach(i => { (o[i.date] = o[i.date] || []).push(i); }); return Object.entries(o).sort((a, b) => b[0].localeCompare(a[0])); }, [mItems]);
   const budget = Number(doc.budget) || 0;
   const icons = useMemo(() => { const o = {}; items.forEach(i => { if (i.ic && !o[i.cat]) o[i.cat] = i.ic; }); return o; }, [items]);
-  const extraCats = useMemo(() => { const base = new Set(EXP_CATS.concat(INC_CATS).map(c => c[1])); const cnt = {}; items.forEach(i => { if (!base.has(i.cat)) { const k = (i.type === "inc" ? "i|" : "e|") + i.cat; cnt[k] = (cnt[k] || 0) + 1; } }); return Object.entries(cnt).sort((x, y) => y[1] - x[1]).slice(0, 40).map(([k]) => [k.slice(0, 1) === "i" ? "inc" : "exp", k.slice(2)]); }, [items]);
+  const extraCats = useMemo(() => { const base = new Set(EXP_CATS.concat(INC_CATS).map(c => c[1])); const cnt = {}, last = {}; items.forEach(i => { if (!base.has(i.cat)) { const k = (i.type === "inc" ? "i|" : "e|") + i.cat; cnt[k] = (cnt[k] || 0) + 1; if (!last[k] || (i.date || "") > last[k]) last[k] = i.date || ""; } }); const cut = addDaysStr(todayStr(), -45); return Object.entries(cnt).sort((x, y) => ((last[y[0]] >= cut) - (last[x[0]] >= cut)) || (y[1] - x[1])).slice(0, 60).map(([k]) => [k.slice(0, 1) === "i" ? "inc" : "exp", k.slice(2)]); }, [items]);
   const addCat = () => { const n = (window.prompt("اسم التصنيف الجديد؟") || "").trim().slice(0, 30); if (n) setCat(n); };
   const openAdd = t => { setPayer("me"); setType(t); setAmount(""); setNote(""); setDate(todayStr()); setCat((t === "inc" ? INC_CATS : EXP_CATS)[0][1]); setSheet("add"); };
   const save = () => {
