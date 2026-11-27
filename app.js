@@ -26,7 +26,7 @@ const h = React.createElement;
 
 function start() {
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-const APP_VERSION = "v2026.11.27-e";
+const APP_VERSION = "v2026.11.27-f";
 if ("serviceWorker" in navigator && navigator.serviceWorker.controller) { let rl = false; navigator.serviceWorker.addEventListener("controllerchange", () => { if (rl) return; rl = true; location.reload(); }); }
 if ("serviceWorker" in navigator) { const reg = () => navigator.serviceWorker.register("./sw.js").catch(() => {}); if (document.readyState === "complete") reg(); else window.addEventListener("load", reg); }
 
@@ -747,9 +747,9 @@ const ITEM_UNITS = ["كيلو", "كجم", "ك", "جرام", "جم", "لتر", "�
 function itemParts(i) {
   const raw = itemNorm(i.note).replace(/(\d)([ء-ي])/g, "$1 $2").replace(/([ء-ي])(\d)/g, "$1 $2").split(/[^0-9a-z.ء-ي]+/).filter(Boolean);
   const parts = []; let name = [];
-  raw.forEach((t, k) => { if (/^\d+(\.\d+)?$/.test(t) && !ITEM_UNITS.includes(raw[k + 1])) { const a = Number(t); if (name.length && a > 0) parts.push({ name: name.join(" "), amount: a }); name = []; } else if (!["ج", "جنيه", "ب"].includes(t)) name.push(t); });
+  raw.forEach((t, k) => { if (/^\d+(\.\d+)?$/.test(t) && !ITEM_UNITS.includes(raw[k + 1]) && !["شهر", "يوم", "سنه", "رقم"].includes(raw[k - 1])) { const a = Number(t); if (name.length && a > 0) parts.push({ name: name.join(" "), amount: a }); name = []; } else if (!["ج", "جنيه", "ب"].includes(t) && !(t === "و" && !name.length)) name.push(t); });
   const sum = sumBy(parts);
-  if (parts.length < 2 || sum > i.amount + 0.5) return [{ name: String(i.note || "").trim() || i.cat, amount: i.amount, it: i }];
+  if (parts.length < 2 || sum > i.amount + 0.5 || !parts.some(p => itemGroupsOf(p.name).length)) return [{ name: String(i.note || "").trim() || i.cat, amount: i.amount, it: i }];
   const rest = Math.round((i.amount - sum) * 100) / 100;
   return parts.map(p => ({ ...p, it: i })).concat(rest > 0 ? [{ name: "باقي الفاتورة", amount: rest, it: i, rest: true }] : []);
 }
@@ -771,7 +771,7 @@ function itemTotals(list) {
     const segs = itemSegments(p.name), found = segs.map(itemGroupsOf), all = Array.from(new Set([].concat(...found)));
     if (all.length > 1 || (all.length === 1 && found.some(f => !f.length))) return mixed.push(p);
     if (all.length === 1) return add(all[0], p);
-    if (split) return add("▫️ " + p.name, p); // صنف مكتوب بسعره ومش في القايمة
+    if (split) return other.push(p); // صنف مكتوب بسعره ومش في القايمة
     const byCat = itemGroupsOf(i.cat);
     if (byCat.length === 1 && segs.length < 2) add(byCat[0], p); else other.push(p);
   }));
