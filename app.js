@@ -26,7 +26,7 @@ const h = React.createElement;
 
 function start() {
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-const APP_VERSION = "v2026.11.27-b";
+const APP_VERSION = "v2026.11.27-c";
 if ("serviceWorker" in navigator && navigator.serviceWorker.controller) { let rl = false; navigator.serviceWorker.addEventListener("controllerchange", () => { if (rl) return; rl = true; location.reload(); }); }
 if ("serviceWorker" in navigator) { const reg = () => navigator.serviceWorker.register("./sw.js").catch(() => {}); if (document.readyState === "complete") reg(); else window.addEventListener("load", reg); }
 
@@ -1078,7 +1078,7 @@ function svcSchedule(doc) {
 function CarService({ doc, upd, curOdo, toast, dueItems }) {
   const svc = svcList(doc, dueItems);
   const odo = doc.odo || {};
-  const [ed, setEd] = useState(null); const [f, setF] = useState({}); const [open, setOpen] = useState(true);
+  const [ed, setEd] = useState(null); const [f, setF] = useState({}); const [open, setOpen] = useState(true); const [openW, setOpenW] = useState(true);
   const perDay = svcPerDay(odo);
   const calc = svc.map(s => ({ ...s, ...svcCalc(s, curOdo, perDay, doc.odoAt) }));
   const setSvc = fn => upd(d => ({ ...d, svc: fn(d.svc || svc) }));
@@ -1090,23 +1090,35 @@ function CarService({ doc, upd, curOdo, toast, dueItems }) {
   const urgent = calc.filter(c => c.lv > 0);
   const saveEd = () => { const km = num(f.km), mo = num(f.mo), lk = num(f.lastKm); setSvc(l => l.map(s => s.id === ed ? { ...s, name: f.name || s.name, km: km > 0 ? km : 0, mo: mo > 0 ? mo : 0, lastKm: lk > 0 ? lk : 0, lastDate: f.lastDate || "", dueKm: num(f.dueKm) > 0 ? num(f.dueKm) : 0 } : s)); setEd(null); };
   const col = lv => lv === 2 ? "var(--danger)" : lv === 1 ? "var(--warn)" : "var(--ok)";
-  return h("div", { className: "card", style: { marginBottom: 10 } },
-    h("div", { onClick: () => setOpen(!open), style: { display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", marginBottom: open ? 10 : 0 } },
-      h("span", { style: { fontWeight: 900, fontSize: 14 } }, "🛠️ جدول الصيانة والتذكيرات"),
-      h("span", { style: { fontSize: 12, fontWeight: 800, color: urgent.length ? "var(--warn)" : "var(--muted)" } }, (urgent.length ? urgent.length + " مستنّي " : "") + (open ? "▲" : "▼"))),
+  // الأقرب فوق: المتأخر، وبعده اللي فاضله أيام أقل، واللي من غير ميعاد في الآخر
+  const rank = c => !c.known ? 1e9 : c.lv === 2 ? -1e6 + Math.min(c.leftKm == null ? 0 : c.leftKm, c.leftDays == null ? 0 : c.leftDays) : c.leftDays != null ? c.leftDays : c.leftKm / 40;
+  const sorted = calc.slice().sort((a, b) => rank(a) - rank(b));
+  const waiting = sorted.filter(c => c.lv > 0), rest = sorted.filter(c => !c.lv);
+  const tiny = { background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "0 2px" };
+  const row = (c, i) => h("div", { key: c.id, style: { padding: "6px 0", borderTop: i ? "1px solid var(--line)" : "none" } },
+    h("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+      h("span", { style: { fontSize: 13 } }, c.ic),
+      h("div", { style: { flex: 1, minWidth: 0, fontWeight: 800, fontSize: 12, lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } }, c.name),
+      c.known && h("span", { style: { width: 8, height: 8, borderRadius: 99, background: col(c.lv), flexShrink: 0 } })),
+    h("div", { style: { display: "flex", alignItems: "center", gap: 6, marginTop: 2 } },
+      h("div", { style: { flex: 1, minWidth: 0, fontSize: 10, color: "var(--muted)" } }, c.known ? [c.leftKm != null ? (c.leftKm <= 0 ? "⚠️ متأخر " + fmt(Math.abs(c.leftKm), 0) + " كم" : "باقي " + fmt(c.leftKm, 0) + " كم") : "", c.due || ""].filter(Boolean).join(" · ") : "دوس ✏️ لتسجيل الميعاد"),
+      h("button", { onClick: () => done(c.id), className: "chip", style: { padding: "2px 8px", fontSize: 10 } }, "اتعمل ✓"),
+      h("button", { onClick: () => wa([c]), style: tiny, "aria-label": "واتساب" }, "📲"),
+      h("button", { onClick: () => { setF({ name: c.name, km: String(c.km || ""), mo: String(c.mo || ""), lastKm: String(c.lastKm || ""), lastDate: c.lastDate || "", dueKm: String(c.dueKm || "") }); setEd(c.id); }, style: tiny, "aria-label": "تعديل" }, "✏️")));
+  const head = (title, isOpen, toggle, color) => h("div", { onClick: toggle, style: { display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", marginBottom: isOpen ? 4 : 0 } },
+    h("span", { style: { fontWeight: 900, fontSize: 13, color: color || "var(--text)" } }, title),
+    h("span", { style: { fontSize: 11, color: "var(--muted)" } }, isOpen ? "▲" : "▼"));
+  const card = { marginBottom: 10, padding: "10px 12px" };
+  return h("div", null,
+    waiting.length > 0 && h("div", { className: "card", style: card },
+      head("⏰ المستنّي (" + waiting.length + ")", openW, () => setOpenW(!openW), "var(--warn)"),
+      openW && h("div", null, waiting.map(row))),
+    h("div", { className: "card", style: card },
+      head("🛠️ جدول الصيانة (" + rest.length + ")", open, () => setOpen(!open)),
     open && h("div", null,
-      calc.map((c, i) => h("div", { key: c.id, style: { padding: "9px 0", borderTop: i ? "1px solid var(--line)" : "none" } },
-        h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
-          h("span", { style: { fontSize: 18 } }, c.ic),
-          h("div", { style: { flex: 1, minWidth: 0 } },
-            h("div", { style: { fontWeight: 800, fontSize: 13 } }, c.name),
-            h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 2 } }, c.known ? [c.leftKm != null ? (c.leftKm <= 0 ? "⚠️ متأخر " + fmt(Math.abs(c.leftKm), 0) + " كم" : "باقي " + fmt(c.leftKm, 0) + " كم") : "", c.due ? "ميعادها " + c.due : ""].filter(Boolean).join(" · ") : "لسه ماتسجّلش آخر ميعاد — دوس ✏️")),
-          c.known && h("span", { style: { width: 10, height: 10, borderRadius: 99, background: col(c.lv), flexShrink: 0 } }),
-          h("button", { onClick: () => done(c.id), className: "chip", style: { padding: "5px 9px", fontSize: 11 } }, "اتعمل ✓"),
-          h("button", { onClick: () => wa([c]), style: { background: "none", border: "none", cursor: "pointer", fontSize: 16 }, "aria-label": "واتساب" }, "📲"),
-          h("button", { onClick: () => { setF({ name: c.name, km: String(c.km || ""), mo: String(c.mo || ""), lastKm: String(c.lastKm || ""), lastDate: c.lastDate || "", dueKm: String(c.dueKm || "") }); setEd(c.id); }, style: { background: "none", border: "none", cursor: "pointer", fontSize: 14 }, "aria-label": "تعديل" }, "✏️")))),
+      rest.map(row),
       missing.length > 0 && h("button", { className: "btn btn-ghost", style: { width: "100%", fontSize: 12, padding: 9, marginTop: 10 }, onClick: importDue }, "📥 استورد " + missing.length + " بند من المواعيد الجاية"),
-      h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 } }, "المواعيد تقريبية حسب متوسط مشيك.")),
+      h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 } }, "المواعيد تقريبية حسب متوسط مشيك."))),
     ed && h(Sheet, { title: "تعديل بند الصيانة", onClose: () => setEd(null) },
       h(Field, { label: "الاسم" }, h("input", { value: f.name || "", onChange: e => setF(x => ({ ...x, name: e.target.value })) })),
       h(Field, { label: "🎯 الميعاد الجاي عند (كم) — اختياري", hint: "لو كتبته بيتحسب منه مباشرة." }, h("input", { type: "number", inputMode: "numeric", value: f.dueKm || "", onChange: e => setF(x => ({ ...x, dueKm: e.target.value })) })),
