@@ -1606,7 +1606,9 @@ async function nativeSyncRun() {
     await LN.createChannel({ id: "adhan_alarm", name: "الأذان (منبّه)", description: "صوت الأذان وقت الصلاة", importance: 5, sound: "adhan.mp3", visibility: 1, vibration: true });
     await LN.createChannel({ id: "reminders", name: "التذكيرات والأذكار", importance: 4, visibility: 1, vibration: true });
     const pend = await LN.getPending();
-    if (pend && pend.notifications && pend.notifications.length) await LN.cancel({ notifications: pend.notifications.map(n => ({ id: n.id })) });
+    // إشعارات التمرين والعربية (9100–9399) ليها جدولة لوحدها، ما تتمسحش هنا
+    const mine = ((pend && pend.notifications) || []).filter(n => !(n.id >= 9100 && n.id <= 9399));
+    if (mine.length) await LN.cancel({ notifications: mine.map(n => ({ id: n.id })) });
     const now = new Date(); const DAYS = 10;
     const months = []; for (let i = 0; i < 2; i++) { const d = new Date(now.getFullYear(), now.getMonth() + i, 1); months.push([d.getFullYear(), d.getMonth() + 1]); }
     const cal = {};

@@ -26,7 +26,7 @@ const h = React.createElement;
 
 function start() {
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-const APP_VERSION = "v2026.11.26-b";
+const APP_VERSION = "v2026.11.27-b";
 if ("serviceWorker" in navigator && navigator.serviceWorker.controller) { let rl = false; navigator.serviceWorker.addEventListener("controllerchange", () => { if (rl) return; rl = true; location.reload(); }); }
 if ("serviceWorker" in navigator) { const reg = () => navigator.serviceWorker.register("./sw.js").catch(() => {}); if (document.readyState === "complete") reg(); else window.addEventListener("load", reg); }
 
@@ -1021,40 +1021,70 @@ const sumBy = (a, f) => a.reduce((s, x) => s + (Number(f ? f(x) : x.amount) || 0
 const SVC_DEF = [["oil", "🛢️", "زيت موتور", 7000, 6], ["oilf", "🛢️", "فلتر زيت", 7000, 6], ["air", "🌬️", "فلتر هواء", 15000, 12], ["ac", "❄️", "فلتر مكيف", 15000, 12], ["fuel", "⛽", "فلتر بنزين", 30000, 24], ["brk", "⚙️", "فحص الفرامل", 20000, 12], ["tyre", "🔘", "ترصيص وتبديل الكاوتش", 10000, 6], ["bat", "🔋", "البطارية", 0, 36]];
 const svcAddMo = (ds, k) => { const [y, m, d] = ds.split("-").map(Number); const dt = new Date(y, m - 1 + k, d); return dt.getFullYear() + "-" + pad(dt.getMonth() + 1) + "-" + pad(dt.getDate()); };
 const svcDays = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 864e5);
-function svcCalc(s, curOdo, perDay) {
+function svcCalc(s, curOdo, perDay, from) {
   const td = todayStr();
   const leftKm = s.dueKm > 0 && curOdo > 0 ? s.dueKm - curOdo : s.km > 0 && s.lastKm > 0 && curOdo > 0 ? s.lastKm + s.km - curOdo : null;
   let due = s.mo > 0 && s.lastDate ? svcAddMo(s.lastDate, s.mo) : null;
-  if (leftKm != null && perDay > 0) { const pd = addDaysStr(td, Math.max(0, Math.round(leftKm / perDay))); if (!due || pd < due) due = pd; }
+  if (leftKm != null && perDay > 0) { const pd = addDaysStr(from || td, Math.max(0, Math.round(leftKm / perDay))); if (!due || pd < due) due = pd; }
   const leftDays = due ? svcDays(td, due) : null;
   const lv = (leftKm != null && leftKm <= 0) || (leftDays != null && leftDays <= 0) ? 2 : (leftKm != null && leftKm <= 500) || (leftDays != null && leftDays <= 14) ? 1 : 0;
   return { leftKm, due, leftDays, lv, known: leftKm != null || due != null };
 }
-async function svcSchedule(items) {
-  try {
-    const LN = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications; if (!LN) return false;
-    try { await LN.requestPermissions(); } catch (e) {}
-    const ids = []; for (let i = 0; i < 40; i++) ids.push({ id: 9300 + i });
-    try { await LN.cancel({ notifications: ids }); } catch (e) {}
-    const list = [], now = new Date();
-    items.forEach(it => { if (!it.due) return;[[3, "قربت"], [0, "ميعادها النهارده"]].forEach(([b, w]) => { const d = new Date(addDaysStr(it.due, -b) + "T10:00:00"); if (d > now && list.length < 40) list.push({ id: 9300 + list.length, title: "🚗 صيانة العربية", body: it.name + " — " + w, schedule: { at: d, allowWhileIdle: true }, channelId: "reminders", largeIcon: "ic_large", smallIcon: "ic_stat_icon" }); }); });
-    if (list.length) await LN.schedule({ notifications: list });
-    return true;
-  } catch (e) { return false; }
+// البنود ومعدل المشي (بيستخدمهم جدول الصيانة والإشعارات)
+const svcFromDue = d => ({ id: "e" + d.src, src: d.src, ic: d.ic, name: d.name, km: d.km, mo: 0, lastKm: d.lastKm, lastDate: d.lastDate, dueKm: d.dueKm });
+const svcList = (doc, dueItems) => doc.svc || (dueItems && dueItems.length ? dueItems.map(svcFromDue) : SVC_DEF.map(([id, ic, name, km, mo]) => ({ id, ic, name, km, mo, lastKm: 0, lastDate: "" })));
+const svcPerDay = odo => { const ks = Object.keys(odo).filter(k => Number(odo[k]) > 0).sort(); if (ks.length < 2) return 0; const a = ks[0], b = ks[ks.length - 1]; const d = svcDays(a + "-01", b + "-01"); return d > 0 ? (Number(odo[b]) - Number(odo[a])) / d : 0; };
+const svcDueItems = entries => entries.filter(e => e.dueKm > 0).sort((a, b) => b.date.localeCompare(a.date)).map(e => ({ src: e.id, ic: carCat(e.cat).ic, name: e.note || e.name || "صيانة", dueKm: e.dueKm, lastKm: e.km || 0, lastDate: e.date || "", km: e.km > 0 && e.dueKm > e.km ? e.dueKm - e.km : 0 }));
+// قايمة إشعارات العربية: أول يوم في الشهر الجديد (للعداد) + قرب الصيانة + ميعادها + كل يوم تأخير لحد «اتعمل»
+function carNotifList(doc, now) {
+  const out = [], odo = doc.odo || {}, td = todayStr();
+  const at = ds => new Date(ds + "T10:00:00");
+  const base = { schedule: null, channelId: "reminders", largeIcon: "ic_large", smallIcon: "ic_stat_icon" };
+  const push = (id, ds, title, body) => out.push({ ...base, id, title, body, schedule: { at: at(ds), allowWhileIdle: true } });
+  let m = td.slice(0, 7), n = 0;
+  for (let k = 0; k < 8 && n < 6; k++) { const ds = addMonths(m, k) + "-" + pad(START_DAY); if (at(ds) > now && !odo[monthOf(ds)]) push(9380 + n++, ds, "🚗 شهر جديد", "سجّل عداد العربية"); }
+  const curOdo = Math.max(0, ...Object.values(odo).map(Number).filter(v => v > 0));
+  const perDay = svcPerDay(odo);
+  const items = svcList(doc, svcDueItems(doc.entries || [])).map(s => ({ ...s, ...svcCalc(s, curOdo, perDay, doc.odoAt) })).filter(c => c.known);
+  const first = at(td) > now ? 0 : 1;
+  for (let k = first; k < first + 30; k++) {
+    const ds = addDaysStr(td, k), lines = [];
+    items.forEach(c => {
+      const left = c.due ? svcDays(ds, c.due) : null;
+      const w = c.lv === 2 || (left != null && left < 0) ? "متأخرة" : left === 0 ? "ميعادها النهارده" : left === 3 || (c.lv === 1 && k === first) ? "قربت" + (c.leftKm != null ? " (باقي " + fmt(c.leftKm, 0) + " كم)" : "") : "";
+      if (w) lines.push(c.name + " — " + w);
+    });
+    if (lines.length) push(9300 + k - first, ds, "🚗 صيانة العربية", lines.join("\n"));
+  }
+  return out;
+}
+let svcQueue = Promise.resolve();
+function svcSchedule(doc) {
+  const run = async () => {
+    try {
+      const LN = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications; if (!LN) return false;
+      let p = {}; try { p = await LN.requestPermissions(); } catch (e) {}
+      if (p.display && p.display !== "granted") return false;
+      try { await LN.createChannel({ id: "reminders", name: "التذكيرات والأذكار", importance: 4, visibility: 1, vibration: true }); } catch (e) {}
+      const ids = []; for (let i = 0; i < 100; i++) ids.push({ id: 9300 + i });
+      try { await LN.cancel({ notifications: ids }); } catch (e) {}
+      const list = carNotifList(doc, new Date());
+      if (list.length) await LN.schedule({ notifications: list });
+      return true;
+    } catch (e) { return false; }
+  };
+  return (svcQueue = svcQueue.then(run));
 }
 function CarService({ doc, upd, curOdo, toast, dueItems }) {
-  const fromDue = d => ({ id: "e" + d.src, src: d.src, ic: d.ic, name: d.name, km: d.km, mo: 0, lastKm: d.lastKm, lastDate: d.lastDate, dueKm: d.dueKm });
-  const svc = doc.svc || (dueItems && dueItems.length ? dueItems.map(fromDue) : SVC_DEF.map(([id, ic, name, km, mo]) => ({ id, ic, name, km, mo, lastKm: 0, lastDate: "" })));
+  const svc = svcList(doc, dueItems);
   const odo = doc.odo || {};
   const [ed, setEd] = useState(null); const [f, setF] = useState({}); const [open, setOpen] = useState(true);
-  const perDay = useMemo(() => { const ks = Object.keys(odo).filter(k => Number(odo[k]) > 0).sort(); if (ks.length < 2) return 0; const a = ks[0], b = ks[ks.length - 1]; const d = svcDays(a + "-01", b + "-01"); return d > 0 ? (Number(odo[b]) - Number(odo[a])) / d : 0; }, [JSON.stringify(odo)]);
-  const calc = svc.map(s => ({ ...s, ...svcCalc(s, curOdo, perDay) }));
-  const key = JSON.stringify(calc.map(c => [c.id, c.due]));
-  useEffect(() => { if (doc.notif) svcSchedule(calc); }, [key, doc.notif]);
+  const perDay = svcPerDay(odo);
+  const calc = svc.map(s => ({ ...s, ...svcCalc(s, curOdo, perDay, doc.odoAt) }));
   const setSvc = fn => upd(d => ({ ...d, svc: fn(d.svc || svc) }));
   const done = id => { if (!(curOdo > 0)) return toast("سجّل قراءة العداد الأول."); const c = calc.find(x => x.id === id); if (c && !(c.km > 0)) { setF({ name: c.name, km: "", mo: String(c.mo || ""), lastKm: String(curOdo), lastDate: todayStr(), dueKm: "" }); setEd(id); return toast("اكتب الميعاد الجاي بالكيلومتر."); } setSvc(l => l.map(s => s.id === id ? { ...s, lastKm: curOdo, lastDate: todayStr(), dueKm: 0 } : s)); toast("اتسجّل ✓"); };
   const missing = (dueItems || []).filter(d => !svc.some(s => s.src === d.src));
-  const importDue = () => { setSvc(l => [...l, ...missing.map(fromDue)]); toast("اتضاف " + missing.length + " بند ✓"); };
+  const importDue = () => { setSvc(l => [...l, ...missing.map(svcFromDue)]); toast("اتضاف " + missing.length + " بند ✓"); };
   const msg = list => "🚗 تذكير صيانة العربية:\n" + list.map(c => "• " + c.name + (c.leftKm != null ? (c.leftKm <= 0 ? " — متأخر " + Math.abs(c.leftKm) + " كم" : " — باقي " + c.leftKm + " كم") : "") + (c.due ? " (" + c.due + ")" : "")).join("\n");
   const wa = list => { const n = String(doc.waNum || "").replace(/\D/g, ""); window.open("https://wa.me/" + n + "?text=" + encodeURIComponent(msg(list)), "_blank"); };
   const urgent = calc.filter(c => c.lv > 0);
@@ -1076,13 +1106,7 @@ function CarService({ doc, upd, curOdo, toast, dueItems }) {
           h("button", { onClick: () => wa([c]), style: { background: "none", border: "none", cursor: "pointer", fontSize: 16 }, "aria-label": "واتساب" }, "📲"),
           h("button", { onClick: () => { setF({ name: c.name, km: String(c.km || ""), mo: String(c.mo || ""), lastKm: String(c.lastKm || ""), lastDate: c.lastDate || "", dueKm: String(c.dueKm || "") }); setEd(c.id); }, style: { background: "none", border: "none", cursor: "pointer", fontSize: 14 }, "aria-label": "تعديل" }, "✏️")))),
       missing.length > 0 && h("button", { className: "btn btn-ghost", style: { width: "100%", fontSize: 12, padding: 9, marginTop: 10 }, onClick: importDue }, "📥 استورد " + missing.length + " بند من المواعيد الجاية"),
-      h("div", { style: { display: "flex", gap: 8, marginTop: 10 } },
-        h("button", { className: "btn btn-ghost", style: { flex: 1, fontSize: 12, padding: 9 }, onClick: () => wa(urgent.length ? urgent : calc.filter(c => c.known)) }, "📲 ابعتلي على واتساب"),
-        h("button", { className: "btn btn-ghost", style: { flex: 1, fontSize: 12, padding: 9 }, onClick: async () => { const ok = await svcSchedule(calc); upd(d => ({ ...d, notif: ok })); toast(ok ? "الإشعارات اتفعّلت ✓" : "الإشعارات شغالة في تطبيق الأندرويد بس."); } }, doc.notif ? "🔔 الإشعارات شغالة" : "🔔 فعّل الإشعارات")),
-      h("div", { style: { marginTop: 8 } }, h("input", { type: "tel", inputMode: "tel", value: doc.waNum || "", onChange: e => upd(d => ({ ...d, waNum: e.target.value })), placeholder: "رقم واتساب بالكود (مثلاً 201001234567) — اختياري" })),
-      h("div", { style: { marginTop: 8 } }, h("input", { value: doc.waKey || "", onChange: e => upd(d => ({ ...d, waKey: e.target.value.trim() })), placeholder: "مفتاح CallMeBot (للتذكير الأوتوماتيك) — اختياري" })),
-      h("div", { style: { marginTop: 8 } }, h("input", { inputMode: "numeric", value: doc.tgChat || "", onChange: e => upd(d => ({ ...d, tgChat: e.target.value.trim() })), placeholder: "Telegram Chat ID (تذكير أوتوماتيك مجاني) — اختياري" })),
-      h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 } }, "المواعيد افتراضية، عدّلها حسب كتيّب عربيتك. الميعاد بيتحسب بالكيلومتر أو الشهور (الأقرب)، ومعدل مشيك اليومي من قراءات العداد.")),
+      h("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 } }, "المواعيد تقريبية حسب متوسط مشيك.")),
     ed && h(Sheet, { title: "تعديل بند الصيانة", onClose: () => setEd(null) },
       h(Field, { label: "الاسم" }, h("input", { value: f.name || "", onChange: e => setF(x => ({ ...x, name: e.target.value })) })),
       h(Field, { label: "🎯 الميعاد الجاي عند (كم) — اختياري", hint: "لو كتبته بيتحسب منه مباشرة." }, h("input", { type: "number", inputMode: "numeric", value: f.dueKm || "", onChange: e => setF(x => ({ ...x, dueKm: e.target.value })) })),
@@ -1119,7 +1143,7 @@ function CarModule({ prof }) {
   const shown = flt === "all" ? base : base.filter(e => e.cat === flt);
   const tAll = sumBy(all), tMon = sumBy(mCar);
   const firstDate = all.length ? all[all.length - 1].date : null;
-  const saveOdo = () => { const v = num(odoIn); if (!(v > 0)) return toast("اكتب قراءة صحيحة."); upd(d => ({ ...d, odo: { ...d.odo, [thisM]: v } })); setOdoIn(""); toast("اتحفظ ✓"); };
+  const saveOdo = () => { const v = num(odoIn); if (!(v > 0)) return toast("اكتب قراءة صحيحة."); upd(d => ({ ...d, odo: { ...d.odo, [thisM]: v }, odoAt: todayStr() })); setOdoIn(""); toast("اتحفظ ✓"); };
   const saveDue = id => { const v = num(editVal); upd(d => ({ ...d, entries: d.entries.map(e => e.id === id ? { ...e, dueKm: v > 0 ? v : 0 } : e) })); setEditDue(null); setEditVal(""); };
   const doAdd = () => {
     const a = num(form.amount); if (!(a > 0)) return toast("اكتب المبلغ.");
@@ -1157,7 +1181,8 @@ function CarModule({ prof }) {
       h("div", { key: "i", style: { display: "flex", gap: 8 } },
         h("input", { type: "number", inputMode: "numeric", placeholder: needsOdo ? "اكتب عداد الشهر ده..." : "تحديث العداد", value: odoIn, onChange: e => setOdoIn(e.target.value) }),
         h("button", { className: "btn btn-primary", style: { padding: "0 20px" }, onClick: saveOdo }, "حفظ"))]),
-    h(CarService, { doc, upd, curOdo, toast, dueItems: all.filter(e => e.dueKm > 0).map(e => ({ src: e.id, ic: carCat(e.cat).ic, name: e.note || e.name || "صيانة", dueKm: e.dueKm, lastKm: e.km || 0, lastDate: e.date || "", km: e.km > 0 && e.dueKm > e.km ? e.dueKm - e.km : 0 })) }),
+    h("button", { className: "btn btn-ghost", style: { width: "100%", fontSize: 13, padding: 10, marginBottom: 10 }, onClick: async () => { const ok = await svcSchedule({ ...doc, notif: true }); upd(d => ({ ...d, notif: ok })); toast(ok ? "الإشعارات اتفعّلت ✓" : window.Capacitor ? "فعّل إذن الإشعارات للتطبيق من إعدادات الموبايل" : "الإشعارات شغالة في تطبيق الأندرويد بس."); } }, doc.notif ? "🔔 الإشعارات شغالة" : "🔔 فعّل الإشعارات"),
+    h(CarService, { doc, upd, curOdo, toast, dueItems: svcDueItems(all) }),
     lbl("🔔 المواعيد الجاية"),
     dueList.length === 0 ? box(h("div", { style: { fontSize: 12, color: "var(--muted)", lineHeight: 1.9 } }, "مفيش أي بند محدد له ميعاد جاي. لما تضيف صيانة، املا خانة «🎯 الميعاد الجاي عند (كم)» وهيظهر هنا تنبيه أوتوماتيك.")) :
       box(dueList.map((it, i) => {
@@ -1902,6 +1927,10 @@ function Shell({ user }) {
   const prof = get("profile", {});
   START_DAY = clamp(parseInt(prof.monthStartDay) || 1, 1, 28);
   const setProf = p => set("profile", p);
+  // إشعارات العربية بتتجدّد من أي شاشة لما البيانات أو اليوم يتغيّر
+  const carN = get("car", {});
+  const carKey = JSON.stringify([!!carN.notif, carN.odo, carN.odoAt, carN.svc, (carN.entries || []).filter(e => e.dueKm > 0), START_DAY, todayStr()]);
+  useEffect(() => { if (carN.notif) svcSchedule(carN); }, [carKey]);
   const [mode, setModeS] = useState(themeMode());
   const [, setTick] = useState(0);
   const setTheme = t => { lsSet("allinone:themeMode", t); lsSet("allinone:themeOv", null); setModeS(t); };
