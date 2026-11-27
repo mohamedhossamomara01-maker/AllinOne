@@ -26,7 +26,7 @@ const h = React.createElement;
 
 function start() {
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-const APP_VERSION = "v2026.11.27-c";
+const APP_VERSION = "v2026.11.27-d";
 if ("serviceWorker" in navigator && navigator.serviceWorker.controller) { let rl = false; navigator.serviceWorker.addEventListener("controllerchange", () => { if (rl) return; rl = true; location.reload(); }); }
 if ("serviceWorker" in navigator) { const reg = () => navigator.serviceWorker.register("./sw.js").catch(() => {}); if (document.readyState === "complete") reg(); else window.addEventListener("load", reg); }
 
@@ -736,6 +736,62 @@ function Rule503020({ doc, set, docKey, mItems, inc, m }) {
       h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: () => setSh(null) }, "تمام")));
 }
 
+// ── تفاصيل الأصناف + البحث + حسبة المشتريات ──
+const itemNorm = s => String(s || "").replace(/[٠-٩]/g, c => "٠١٢٣٤٥٦٧٨٩".indexOf(c)).replace(/٫/g, ".").toLowerCase().replace(/[ً-ٰٟـ]/g, "").replace(/[أإآ]/g, "ا").replace(/ى/g, "ي").replace(/ة/g, "ه");
+const itemWords = s => itemNorm(s).split(/[^0-9a-z.ء-ي]+/).filter(Boolean).map(w => { if (w.length > 3 && w[0] === "و") w = w.slice(1); return w.length > 3 && w.startsWith("ال") ? w.slice(2) : w; });
+// الترتيب مهم: «كبدة فراخ» تتحسب كبدة
+const ITEM_GROUPS = [["🫀 كبدة", "كبده كبد"], ["🍗 فراخ", "فراخ فرخه دجاج وراك اوراك صدور"], ["🥩 لحمة", "لحمه لحم لحوم كندوز ضاني"], ["🐟 سمك", "سمك اسماك جمبري تونه"], ["🍝 مكرونة", "مكرونه مكرونات شعريه"], ["🍚 رز", "رز ارز"], ["🥚 بيض", "بيض"], ["🌿 توابل وعطارة", "توابل بهارات عطاره"], ["🛢️ زيت وسمن", "زيت سمن سمنه"], ["🍬 سكر", "سكر"], ["🧀 ألبان وجبن", "لبن البان جبن جبنه زبادي"], ["🥬 خضار", "خضار خضروات طماطم بطاطس بصل"], ["🍎 فاكهة", "فاكهه فواكه موز تفاح برتقال"], ["🍞 عيش ومخبوزات", "عيش خبز مخبوزات"], ["🧼 منظفات", "منظفات صابون مسحوق"]].map(([l, w]) => [l, w.split(" ").map(x => itemWords(x)[0])]);
+const itemGroupsOf = text => { const w = itemWords(text); const g = ITEM_GROUPS.filter(x => x[1].some(k => w.includes(k))).map(x => x[0]); return g.includes("🫀 كبدة") ? ["🫀 كبدة"] : g; };
+// «رز 30 مكرونة 20» → بندين. لازم الاسم وبعده السعر، وأرقام الوزن (كيلو/جرام…) مش أسعار
+const ITEM_UNITS = ["كيلو", "كجم", "ك", "جرام", "جم", "لتر", "مل", "علبه", "كيس", "قطعه", "حبه"];
+function itemParts(i) {
+  const raw = itemNorm(i.note).replace(/(\d)([ء-ي])/g, "$1 $2").replace(/([ء-ي])(\d)/g, "$1 $2").split(/[^0-9a-z.ء-ي]+/).filter(Boolean);
+  const parts = []; let name = [];
+  raw.forEach((t, k) => { if (/^\d+(\.\d+)?$/.test(t) && !ITEM_UNITS.includes(raw[k + 1])) { const a = Number(t); if (name.length && a > 0) parts.push({ name: name.join(" "), amount: a }); name = []; } else if (!["ج", "جنيه", "ب"].includes(t)) name.push(t); });
+  const sum = sumBy(parts);
+  if (parts.length < 2 || sum > i.amount + 0.5) return [{ name: String(i.note || "").trim() || i.cat, amount: i.amount, it: i }];
+  const rest = Math.round((i.amount - sum) * 100) / 100;
+  return parts.map(p => ({ ...p, it: i })).concat(rest > 0 ? [{ name: "باقي الفاتورة", amount: rest, it: i, rest: true }] : []);
+}
+function itemTotals(list) {
+  const groups = {}, mixed = [];
+  list.filter(i => !i.auto).forEach(i => itemParts(i).forEach(p => { if (p.rest) return mixed.push(p); const g = itemGroupsOf(p.name); if (g.length === 1) (groups[g[0]] = groups[g[0]] || []).push(p); else if (g.length > 1) mixed.push(p); }));
+  return { groups, mixed };
+}
+function itemSearch(list, q) {
+  const words = itemWords(q); if (!words.length) return [];
+  const g = itemGroupsOf(q);
+  return list.flatMap(itemParts).filter(p => { const text = p.name + " " + p.it.cat, tw = itemWords(text); return words.every(w => tw.some(t => t.includes(w))) || (words.length === 1 && g.length === 1 && itemGroupsOf(p.name).includes(g[0])); });
+}
+function CatBreakdown({ list, icons, exp, m }) {
+  const [open, setOpen] = useState(""); const [sh, setSh] = useState(null); const [q, setQ] = useState("");
+  const cats = {}; list.forEach(i => { const k = catKey(i.cat); const c = cats[k] || (cats[k] = { k, names: {}, v: 0, items: [] }); c.names[i.cat] = (c.names[i.cat] || 0) + i.amount; c.v += i.amount; c.items.push(i); });
+  const lines = arr => h("div", { style: { background: "var(--card2)", borderRadius: 10, padding: "2px 9px", marginTop: 6 } }, arr.slice().sort((a, b) => b.it.date.localeCompare(a.it.date)).map((p, n) => h("div", { key: n, style: { display: "flex", justifyContent: "space-between", gap: 8, padding: "5px 0", borderTop: n ? "1px solid var(--line)" : "none", fontSize: 12 } },
+    h("div", { style: { minWidth: 0, wordBreak: "break-word" } }, p.name, h("div", { style: { fontSize: 10, color: "var(--muted)" } }, p.it.date + " · " + p.it.cat)),
+    h("b", null, fmt(p.amount)))));
+  const asLine = i => ({ name: String(i.note || "").trim() || i.cat, amount: i.amount, it: i });
+  const found = sh === "find" ? itemSearch(list, q) : [];
+  const tot = sh === "calc" ? itemTotals(list) : null;
+  const group = (label, arr) => h("div", { key: label, style: { padding: "8px 0", borderTop: "1px solid var(--line)" } },
+    h("div", { onClick: () => setOpen(open === label ? "" : label), style: { display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 800, cursor: "pointer" } }, h("span", null, label + (open === label ? " ▲" : " ▼")), h("span", null, fmt(sumBy(arr)) + " ج")),
+    open === label && lines(arr));
+  return h("div", { className: "card", style: { marginBottom: 10 } },
+    h("div", { style: { fontWeight: 900, fontSize: 14, marginBottom: 8 } }, "المصروف حسب النوع"),
+    h("div", { style: { display: "flex", gap: 8, marginBottom: 10 } }, [["find", "🔍 بحث"], ["calc", "🧮 حسبة الأصناف"]].map(([k, l]) => h("button", { key: k, className: "chip", style: { flex: 1, padding: 8 }, onClick: () => { setOpen(""); setQ(""); setSh(k); } }, l))),
+    Object.values(cats).sort((a, b) => b.v - a.v).map(c => { const name = Object.entries(c.names).sort((a, b) => b[1] - a[1])[0][0], on = !sh && open === c.k; return h("div", { key: c.k, style: { marginBottom: 9 } },
+      h("div", { onClick: () => setOpen(on ? "" : c.k), style: { cursor: "pointer" } },
+        h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 } }, h("span", null, (icons[name] || catIcon(name, "exp")) + " " + name + (on ? " ▲" : " ▼")), h("span", { style: { color: "var(--muted)" } }, fmt(c.v, 0) + " • " + Math.round(c.v / exp * 100) + "%")),
+        h(Bar, { pct: c.v / exp * 100 })),
+      on && lines(c.items.map(asLine))); }),
+    sh === "find" && h(Sheet, { title: "بحث في " + monthLabel(m), onClose: () => { setSh(null); setOpen(""); } },
+      h("input", { value: q, autoFocus: true, placeholder: "مثلاً: فراخ، مكرونة", onChange: e => setQ(e.target.value) }),
+      q.trim() && h("div", { style: { fontWeight: 900, fontSize: 13, marginTop: 10 } }, found.length ? "الإجمالي: " + fmt(sumBy(found)) + " ج" : "مفيش نتايج"),
+      found.length > 0 && lines(found)),
+    sh === "calc" && h(Sheet, { title: "حسبة " + monthLabel(m), onClose: () => { setSh(null); setOpen(""); } },
+      Object.keys(tot.groups).length === 0 && tot.mixed.length === 0 && h("div", { style: { fontSize: 13, color: "var(--muted)" } }, "مفيش أصناف متسجلة."),
+      Object.entries(tot.groups).sort((a, b) => sumBy(b[1]) - sumBy(a[1])).map(([l, arr]) => group(l, arr)),
+      tot.mixed.length > 0 && group("🧺 مش متقسم", tot.mixed)));
+}
 function ExpensesModule({ docKey, who, ride }) {
   const { get, set } = useData();
   const doc = get(docKey, { items: [], budget: 0 });
@@ -826,11 +882,7 @@ function ExpensesModule({ docKey, who, ride }) {
       h("button", { className: "btn btn-primary", style: { flex: 1 }, onClick: () => openAdd("exp") }, "− مصروف"),
       h("button", { className: "btn btn-ghost", style: { flex: 1 }, onClick: () => openAdd("inc") }, "+ دخل")),
     h(ReceiptScan, { docKey, icons, onSaved: (dt, n) => { setM(monthOf(dt)); toast("اتسجّل " + n + " بند من الفاتورة ✓"); } }),
-    byCat.length > 0 && h("div", { className: "card", style: { marginBottom: 10 } },
-      h("div", { style: { fontWeight: 900, fontSize: 14, marginBottom: 10 } }, "المصروف حسب النوع"),
-      Object.values(byCat.reduce((o, [c, v]) => { const k = catKey(c); if (o[k]) o[k][1] += v; else o[k] = [c, v]; return o; }, {})).sort((a, b) => b[1] - a[1]).map(([c, v]) => h("div", { key: c, style: { marginBottom: 9 } },
-        h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 } }, h("span", null, (icons[c] || catIcon(c, "exp")) + " " + c), h("span", { style: { color: "var(--muted)" } }, fmt(v, 0) + " • " + Math.round(v / exp * 100) + "%")),
-        h(Bar, { pct: v / exp * 100 })))),
+    byCat.length > 0 && h(CatBreakdown, { key: "cb" + m, list: mItems.filter(i => i.type !== "inc" && !i.ext), icons, exp, m }),
     (() => {
       const fixedCats = new Set(((fixedDoc.items) || []).flatMap(f => [f.cat].concat((f.past || []).map(p => p.cat))));
       const secOf = i => i.sec || (i.type === "inc" ? "sal" : (FIXED_NAMES.has(i.cat) || fixedCats.has(i.cat)) ? "fix" : "gen");
@@ -859,7 +911,7 @@ function ExpensesModule({ docKey, who, ride }) {
       h(Field, { label: "المبلغ" }, h("input", { type: "number", inputMode: "decimal", value: amount, onChange: e => setAmount(e.target.value), placeholder: "0", autoFocus: true, style: { fontSize: 22, fontWeight: 900 } })),
       h(Field, { label: "النوع" }, h("div", { style: { display: "flex", flexWrap: "wrap", gap: 7 } }, (type === "inc" ? INC_CATS : EXP_CATS).concat(extraCats.filter(x => x[0] === type).map(x => [icons[x[1]] || "🧾", x[1]])).concat(cat && ![...EXP_CATS, ...INC_CATS].some(c => c[1] === cat) && !extraCats.some(x => x[1] === cat) ? [["🧾", cat]] : []).map(([ic, n]) => h("button", { key: n, type: "button", className: "chip" + (cat === n ? " on" : ""), onClick: () => setCat(n) }, ic + " " + n)).concat([h("button", { key: "__new", type: "button", className: "chip", onClick: addCat }, "➕ تصنيف جديد")]))),
       main && type === "exp" && h(Field, { label: "هيتخصم من إيه؟", hint: payer === "me" ? null : payer === "fam" ? "هيتسجّل في ميزانية " + (profE.familyName || "الشريك") + " وما يتحسبش من مرتبك." : "هيتسجّل كسحب من التحويش وما يتحسبش من مرتبك." }, h("div", { style: { display: "flex", gap: 7 } }, [["me", "👤 مرتبي"]].concat(famHasSal ? [["fam", "👥 مرتب " + profE.familyName]] : []).concat([["save", "💰 التحويش"]]).map(([k, l]) => h("button", { key: k, type: "button", className: "chip" + (payer === k ? " on" : ""), style: { flex: 1, padding: 9 }, onClick: () => setPayer(k) }, l)))),
-      h(Field, { label: "ملاحظة (اختياري)" }, h("input", { value: note, onChange: e => setNote(e.target.value), maxLength: 80 })),
+      h(Field, { label: "ملاحظة (اختياري)" }, h("input", { value: note, onChange: e => setNote(e.target.value), maxLength: 200, placeholder: type === "exp" ? "مثلاً: رز 30 مكرونة 20" : "" })),
       h(Field, { label: "التاريخ" }, h("input", { type: "date", value: date, onChange: e => setDate(e.target.value), max: "2100-01-01" })),
       h("button", { className: "btn btn-primary", style: { width: "100%" }, onClick: save }, "حفظ")),
     sheet === "cbud" && h(Sheet, { title: "ميزانية قسم", onClose: () => setSheet(null) },
