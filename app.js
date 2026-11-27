@@ -26,7 +26,7 @@ const h = React.createElement;
 
 function start() {
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-const APP_VERSION = "v2026.11.27-d";
+const APP_VERSION = "v2026.11.27-e";
 if ("serviceWorker" in navigator && navigator.serviceWorker.controller) { let rl = false; navigator.serviceWorker.addEventListener("controllerchange", () => { if (rl) return; rl = true; location.reload(); }); }
 if ("serviceWorker" in navigator) { const reg = () => navigator.serviceWorker.register("./sw.js").catch(() => {}); if (document.readyState === "complete") reg(); else window.addEventListener("load", reg); }
 
@@ -738,9 +738,9 @@ function Rule503020({ doc, set, docKey, mItems, inc, m }) {
 
 // ── تفاصيل الأصناف + البحث + حسبة المشتريات ──
 const itemNorm = s => String(s || "").replace(/[٠-٩]/g, c => "٠١٢٣٤٥٦٧٨٩".indexOf(c)).replace(/٫/g, ".").toLowerCase().replace(/[ً-ٰٟـ]/g, "").replace(/[أإآ]/g, "ا").replace(/ى/g, "ي").replace(/ة/g, "ه");
-const itemWords = s => itemNorm(s).split(/[^0-9a-z.ء-ي]+/).filter(Boolean).map(w => { if (w.length > 3 && w[0] === "و") w = w.slice(1); return w.length > 3 && w.startsWith("ال") ? w.slice(2) : w; });
+const itemWords = s => itemNorm(s).split(/[^0-9a-z.ء-ي]+/).filter(Boolean).map(w => { if (w !== "وراك" && w[0] === "و" && (w.length > 3 || w === "ورز")) w = w.slice(1); return w.length > 3 && w.startsWith("ال") ? w.slice(2) : w; });
 // الترتيب مهم: «كبدة فراخ» تتحسب كبدة
-const ITEM_GROUPS = [["🫀 كبدة", "كبده كبد"], ["🍗 فراخ", "فراخ فرخه دجاج وراك اوراك صدور"], ["🥩 لحمة", "لحمه لحم لحوم كندوز ضاني"], ["🐟 سمك", "سمك اسماك جمبري تونه"], ["🍝 مكرونة", "مكرونه مكرونات شعريه"], ["🍚 رز", "رز ارز"], ["🥚 بيض", "بيض"], ["🌿 توابل وعطارة", "توابل بهارات عطاره"], ["🛢️ زيت وسمن", "زيت سمن سمنه"], ["🍬 سكر", "سكر"], ["🧀 ألبان وجبن", "لبن البان جبن جبنه زبادي"], ["🥬 خضار", "خضار خضروات طماطم بطاطس بصل"], ["🍎 فاكهة", "فاكهه فواكه موز تفاح برتقال"], ["🍞 عيش ومخبوزات", "عيش خبز مخبوزات"], ["🧼 منظفات", "منظفات صابون مسحوق"]].map(([l, w]) => [l, w.split(" ").map(x => itemWords(x)[0])]);
+const ITEM_GROUPS = [["🫀 كبدة", "كبده كبد"], ["🍗 فراخ", "فراخ فرخه دجاج وراك اوراك صدور"], ["🥩 لحمة", "لحمه لحم لحوم كندوز ضاني"], ["🐟 سمك", "سمك اسماك جمبري تونه"], ["🍝 مكرونة", "مكرونه مكرونات شعريه"], ["🍚 رز", "رز ارز"], ["🥚 بيض", "بيض"], ["🌿 توابل وعطارة", "توابل بهارات عطاره"], ["🛢️ زيت وسمن", "زيت سمن سمنه"], ["🍬 سكر", "سكر"], ["🧀 ألبان وجبن", "لبن البان جبن جبنه زبادي"], ["🥬 خضار", "خضار خضروات طماطم بطاطس بصل"], ["🍎 فاكهة", "فاكهه فواكه موز تفاح برتقال"], ["🍞 عيش ومخبوزات", "عيش خبز مخبوزات فينو"], ["🫘 فول وبقوليات", "فول عدس فاصوليا لوبيا طعميه"], ["🍫 سناكس وحلويات", "شيبسي بسكويت شوكولاته ايس حلويات كنافه"], ["🥤 مشروبات", "شاي قهوه عصير بيبسي مياه"], ["💊 صيدلية وأدوية", "صيدليه دوا ادويه علاج"], ["🧼 منظفات", "منظفات صابون مسحوق"]].map(([l, w]) => [l, w.split(" ").map(x => itemWords(x)[0])]);
 const itemGroupsOf = text => { const w = itemWords(text); const g = ITEM_GROUPS.filter(x => x[1].some(k => w.includes(k))).map(x => x[0]); return g.includes("🫀 كبدة") ? ["🫀 كبدة"] : g; };
 // «رز 30 مكرونة 20» → بندين. لازم الاسم وبعده السعر، وأرقام الوزن (كيلو/جرام…) مش أسعار
 const ITEM_UNITS = ["كيلو", "كجم", "ك", "جرام", "جم", "لتر", "مل", "علبه", "كيس", "قطعه", "حبه"];
@@ -753,10 +753,29 @@ function itemParts(i) {
   const rest = Math.round((i.amount - sum) * 100) / 100;
   return parts.map(p => ({ ...p, it: i })).concat(rest > 0 ? [{ name: "باقي الفاتورة", amount: rest, it: i, rest: true }] : []);
 }
+// «لبن وشيبسي وبسكويت» = أكتر من حاجة في سطر واحد
+function itemSegments(text) {
+  const segs = [[]];
+  itemNorm(text).replace(/[،,+\n]/g, " | ").split(/\s+/).filter(Boolean).forEach(t => {
+    const known = itemGroupsOf(t).length > 0, joined = t !== "وراك" && t[0] === "و" && (t.length > 3 || t === "ورز");
+    if (t === "|" || t === "و" || joined) { if (/^(و)?(نص|نصف|ربع|تلت)$/.test(t)) return; segs.push(t === "|" || t === "و" ? [] : [known ? t : t.slice(1)]); } else segs[segs.length - 1].push(t);
+  });
+  return segs.filter(x => x.length).map(x => x.join(" "));
+}
 function itemTotals(list) {
-  const groups = {}, mixed = [];
-  list.filter(i => !i.auto).forEach(i => itemParts(i).forEach(p => { if (p.rest) return mixed.push(p); const g = itemGroupsOf(p.name); if (g.length === 1) (groups[g[0]] = groups[g[0]] || []).push(p); else if (g.length > 1) mixed.push(p); }));
-  return { groups, mixed };
+  const groups = {}, mixed = [], other = [];
+  const add = (g, p) => (groups[g] = groups[g] || []).push(p);
+  list.filter(i => !i.auto).forEach(i => itemParts(i).forEach(p => {
+    if (p.rest) return mixed.push(p);
+    const split = p.amount !== i.amount;
+    const segs = itemSegments(p.name), found = segs.map(itemGroupsOf), all = Array.from(new Set([].concat(...found)));
+    if (all.length > 1 || (all.length === 1 && found.some(f => !f.length))) return mixed.push(p);
+    if (all.length === 1) return add(all[0], p);
+    if (split) return add("▫️ " + p.name, p); // صنف مكتوب بسعره ومش في القايمة
+    const byCat = itemGroupsOf(i.cat);
+    if (byCat.length === 1 && segs.length < 2) add(byCat[0], p); else other.push(p);
+  }));
+  return { groups, mixed, other };
 }
 function itemSearch(list, q) {
   const words = itemWords(q); if (!words.length) return [];
@@ -788,9 +807,11 @@ function CatBreakdown({ list, icons, exp, m }) {
       q.trim() && h("div", { style: { fontWeight: 900, fontSize: 13, marginTop: 10 } }, found.length ? "الإجمالي: " + fmt(sumBy(found)) + " ج" : "مفيش نتايج"),
       found.length > 0 && lines(found)),
     sh === "calc" && h(Sheet, { title: "حسبة " + monthLabel(m), onClose: () => { setSh(null); setOpen(""); } },
-      Object.keys(tot.groups).length === 0 && tot.mixed.length === 0 && h("div", { style: { fontSize: 13, color: "var(--muted)" } }, "مفيش أصناف متسجلة."),
+      Object.keys(tot.groups).length + tot.mixed.length + tot.other.length === 0 && h("div", { style: { fontSize: 13, color: "var(--muted)" } }, "مفيش أصناف متسجلة."),
       Object.entries(tot.groups).sort((a, b) => sumBy(b[1]) - sumBy(a[1])).map(([l, arr]) => group(l, arr)),
-      tot.mixed.length > 0 && group("🧺 مش متقسم", tot.mixed)));
+      tot.mixed.length > 0 && group("🧺 مش متقسم", tot.mixed),
+      tot.other.length > 0 && group("📦 حاجات تانية", tot.other),
+      h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 900, padding: "10px 0 0", borderTop: "2px solid var(--line)" } }, h("span", null, "الإجمالي"), h("span", null, fmt(sumBy(Object.values(tot.groups).flat().concat(tot.mixed, tot.other))) + " ج"))));
 }
 function ExpensesModule({ docKey, who, ride }) {
   const { get, set } = useData();
